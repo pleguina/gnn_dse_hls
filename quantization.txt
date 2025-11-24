@@ -1,0 +1,579 @@
+Quantizing a PyG SAGEConv model and exporting it to an INT8 HLS implementation
+===============================================================================
+
+Goal
+----
+
+We want to:
+
+1. Train a GraphSAGE model in PyTorch Geometric (PyG) using SAGEConv.
+2. Quantize it to INT8 (weights and activations).
+3. Export:
+   - quantized weights (int8),
+   - quantized biases (int32 in accumulator domain),
+   - scale factors (float),
+   so they match an HLS implementation of a two-layer GraphSAGE network similar
+   to the `graphsage_network` C++/HLS code.
+
+We focus on the SAGEConv code as implemented in PyG and on a simplified
+configuration that maps cleanly to the HLS design.
+
+-------------------------------------------------------------------------------
+1. What SAGEConv actually computes
+-------------------------------------------------------------------------------
+
+This is the relevant part of the SAGEConv implementation:
+
+    class SAGEConv(MessagePassing):
+        ...
+        def __init__(..., aggr="mean", normalize=False,
+                     root_weight=True, project=False, ...):
+
+            ...
+            if self.project:
+                self.lin = Linear(in_channels[0], in_channels[0], bias=True)
+
+            if isinstance(self.aggr_module, MultiAggregation):
+                aggr_out_channels = self.aggr_module.get_out_channels(
+                    in_channels[0])
+            else:
+                aggr_out_channels = in_channels[0]
+
+            self.lin_l = Linear(aggr_out_channels, out_channels, bias=bias)
+            if self.root_weight:
+                self.lin_r = Linear(in_channels[1], out_channels, bias=False)
+
+        def forward(self, x, edge_index, size=None):
+            if isinstance(x, Tensor):
+                x = (x, x)
+
+            if self.project and hasattr(self, 'lin'):
+                x = (self.lin(x[0]).relu(), x[1])
+
+            # propagate_type: (x: OptPairTensor)
+            out = self.propagate(edge_index, x=x, size=size)
+            out = self.lin_l(out)
+
+            x_r = x[1]
+            if self.root_weight and x_r is not None:
+                out = out + self.lin_r(x_r)
+
+            if self.normalize:
+                out = F.normalize(out, p=2., dim=-1)
+
+            return out
+
+        def message(self, x_j: Tensor) -> Tensor:
+            return x_j
+
+        def message_and_aggregate(self, adj_t: Adj, x: OptPairTensor) -> Tensor:
+            if isinstance(adj_t, SparseTensor):
+                adj_t = adj_t.set_value(None, layout=None)
+            return spmm(adj_t, x[0], reduce=self.aggr)
+
+Key points:
+
+- `propagate(edge_index, x=x, size=size)` with `aggr="mean"` computes:
+
+    h_agg_i = mean_{j in N(i)} x_j
+
+  where N(i) is the neighborhood of node i (possibly including self-loops,
+  depending on how the graph was built).
+
+- Then:
+
+    out_i = lin_l(h_agg_i) = W_l * h_agg_i + b_l
+
+- If `root_weight=True`, it adds another term:
+
+    out_i += lin_r(x_i) = W_r * x_i
+
+- If `normalize=True`, it L2-normalizes the output.
+
+So the full SAGEConv (in our restricted configuration) is:
+
+    out_i = W_l * h_agg_i + b_l                    (root_weight=False)
+
+    out_i = W_l * h_agg_i + b_l + W_r * x_i        (root_weight=True)
+
+
+-------------------------------------------------------------------------------
+2. Matching SAGEConv to the HLS graphsage_network
+-------------------------------------------------------------------------------
+
+The HLS `graphsage_network` does roughly this:
+
+Layer 1:
+  1. aggregate(adj_matrix, input_buf, agg1, ...)
+       -> agg1[n][f] = sum_j adj_matrix[n][j] * input_buf[j][f]
+     If adj_matrix rows are normalized (row sum = 1), this is exactly the
+     "mean" aggregator of SAGEConv.
+
+  2. Linear transform on agg1:
+
+       acc = bias1[o];
+       for i in range(MAX_FEATURES_IN):
+           acc += agg1[n][i] * weights1[o][i];
+
+       hidden[n][o] = quantized(acc, ...);
+
+  3. ReLU on hidden.
+
+Layer 2:
+  1. aggregate(adj_matrix, hidden, agg2, ...)
+  2. Linear transform on agg2 with weights2, bias2.
+  3. ReLU and copy to output.
+
+Crucial observation:
+
+- This corresponds to a SAGEConv with:
+  - aggr = "mean" (if adj_matrix is normalized),
+  - root_weight = False,
+  - project = False,
+  - normalize = False.
+
+So, to match the HLS implementation, we should train a SAGEConv with
+these options:
+
+    conv1 = SAGEConv(in_dim, hidden_dim,
+                     aggr="mean",
+                     root_weight=False,
+                     project=False,
+                     normalize=False)
+
+    conv2 = SAGEConv(hidden_dim, out_dim,
+                     aggr="mean",
+                     root_weight=False,
+                     project=False,
+                     normalize=False)
+
+Then for each SAGEConv, the effective layer is:
+
+    out_i = W_l * h_agg_i + b_l
+
+which maps directly to:
+
+    weights1 = conv1.lin_l.weight
+    bias1    = conv1.lin_l.bias
+
+    weights2 = conv2.lin_l.weight
+    bias2    = conv2.lin_l.bias
+
+-------------------------------------------------------------------------------
+3. Quantization scheme: INT8 + scales
+-------------------------------------------------------------------------------
+
+We adopt a standard symmetric per-tensor quantization:
+
+- Activations and weights are int8 in [-128, 127].
+- Each tensor has a scale s > 0, so:
+
+    real_value ≈ scale * int8_value
+
+For clarity, we define scales:
+
+- Activations:
+  - s_x0  = input feature scale                (HLS: scale_in)
+  - s_h1  = hidden activation scale            (HLS: scale_hidden)
+  - s_y   = output activation scale            (HLS: scale_out)
+
+- Weights:
+  - s_w1  = conv1 weights scale                (HLS: scale_w1)
+  - s_w2  = conv2 weights scale                (HLS: scale_w2)
+
+- Biases are stored in the accumulator domain as int32.
+
+Generic relationships:
+
+- For a linear layer y = W x + b:
+
+    x_real = s_x * x_int8
+    W_real = s_w * W_int8
+    b_real = real bias
+
+  Then:
+
+    y_real = sum_i (W_real_ji * x_real_i) + b_real_j
+            = s_x * s_w * sum_i (W_int8_ji * x_int8_i) + b_real_j
+
+  Define:
+
+    acc_j = sum_i (W_int8_ji * x_int8_i) + b_int32_j   (acc_j is int32)
+
+  To match y_real, we must choose:
+
+    b_int32_j ≈ b_real_j / (s_x * s_w)
+
+  and then:
+
+    y_real ≈ s_x * s_w * acc_j
+
+  If the next layer expects an int8 activation with scale s_y, we quantize:
+
+    y_int8 ≈ round(y_real / s_y) = round((s_x * s_w / s_y) * acc_j)
+
+In practice, in HLS we often compute:
+
+- y_real = acc * (s_x * s_w), then quantize(y_real, s_y).
+
+-------------------------------------------------------------------------------
+4. Step-by-step pipeline in PyTorch → HLS
+-------------------------------------------------------------------------------
+
+We assume we have a trained GraphSAGE model using SAGEConv as described:
+
+    class SageNet(torch.nn.Module):
+        def __init__(self, in_dim, hidden_dim, out_dim):
+            super().__init__()
+            self.conv1 = SAGEConv(in_dim, hidden_dim,
+                                  aggr="mean",
+                                  root_weight=False,
+                                  project=False,
+                                  normalize=False)
+            self.conv2 = SAGEConv(hidden_dim, out_dim,
+                                  aggr="mean",
+                                  root_weight=False,
+                                  project=False,
+                                  normalize=False)
+            self.relu = torch.nn.ReLU()
+
+        def forward(self, x, edge_index):
+            h1 = self.conv1(x, edge_index)
+            h1 = self.relu(h1)
+            y  = self.conv2(h1, edge_index)
+            return y
+
+Steps:
+
+---------------------------------------------
+Step 1 – Train the float32 model
+---------------------------------------------
+
+Train `SageNet` as usual in PyTorch with float32 weights and activations.
+
+---------------------------------------------
+Step 2 – Calibrate activation scales
+---------------------------------------------
+
+After training, run a calibration dataset through the model to measure
+the dynamic ranges of:
+
+- Input x
+- Hidden output h1
+- Final output y
+
+Example:
+
+    model.eval()
+
+    max_x0 = 0.0
+    max_h1 = 0.0
+    max_y  = 0.0
+
+    with torch.no_grad():
+        for data in calib_loader:
+            x, edge_index = data.x, data.edge_index
+
+            # input range
+            max_x0 = max(max_x0, x.abs().max().item())
+
+            # layer 1 output
+            h1 = model.conv1(x, edge_index)
+            max_h1 = max(max_h1, h1.abs().max().item())
+
+            # layer 2 output
+            y = model.conv2(h1.relu(), edge_index)
+            max_y = max(max_y, y.abs().max().item())
+
+    # Define activation scales (symmetric, per-tensor)
+    s_x0 = max_x0 / 127.0 if max_x0 > 0 else 1e-6
+    s_h1 = max_h1 / 127.0 if max_h1 > 0 else 1e-6
+    s_y  = max_y  / 127.0 if max_y  > 0 else 1e-6
+
+These map directly to:
+
+- HLS scale_in     = s_x0
+- HLS scale_hidden = s_h1
+- HLS scale_out    = s_y
+
+---------------------------------------------
+Step 3 – Extract real weights from SAGEConv
+---------------------------------------------
+
+For each SAGEConv layer with root_weight=False, the weights used after
+aggregation are in `lin_l`:
+
+    W1_real = model.conv1.lin_l.weight.data.clone()  # shape [hidden_dim, in_dim]
+    b1_real = model.conv1.lin_l.bias.data.clone()    # shape [hidden_dim]
+
+    W2_real = model.conv2.lin_l.weight.data.clone()  # shape [out_dim, hidden_dim]
+    b2_real = model.conv2.lin_l.bias.data.clone()    # shape [out_dim]
+
+These correspond to:
+
+- HLS weights1[o][i] ~ W1_real[o, i]
+- HLS bias1[o]       ~ b1_real[o]
+- HLS weights2[o][i] ~ W2_real[o, i]
+- HLS bias2[o]       ~ b2_real[o]
+
+If your HLS arrays are larger (e.g. MAX_FEATURES_HIDDEN > hidden_dim), you
+will need to pad these with zeros appropriately.
+
+---------------------------------------------
+Step 4 – Quantize weights to int8
+---------------------------------------------
+
+Per-tensor symmetric quantization:
+
+    # Layer 1 weights
+    max_w1 = W1_real.abs().max().item()
+    s_w1 = max_w1 / 127.0 if max_w1 > 0 else 1e-6
+    W1_int8 = torch.clamp(torch.round(W1_real / s_w1),
+                          -128, 127).to(torch.int8)
+
+    # Layer 2 weights
+    max_w2 = W2_real.abs().max().item()
+    s_w2 = max_w2 / 127.0 if max_w2 > 0 else 1e-6
+    W2_int8 = torch.clamp(torch.round(W2_real / s_w2),
+                          -128, 127).to(torch.int8)
+
+These scales and integer matrices are passed to HLS as:
+
+- scale_w1 = s_w1
+- weights1 = W1_int8
+- scale_w2 = s_w2
+- weights2 = W2_int8
+
+---------------------------------------------
+Step 5 – Quantize biases into accumulator domain (int32)
+---------------------------------------------
+
+Biases must be expressed in the same integer domain as the accumulator:
+
+For Layer 1, the input to the linear transform after aggregate is the
+quantized agg1, which represents real values approximately as:
+
+    h_agg_real ≈ s_h1 * agg1_int8
+
+Weights are:
+
+    W1_real ≈ s_w1 * W1_int8
+
+The linear operation in integer form is:
+
+    acc_j = sum_i (agg1_int8_i * W1_int8_ji) + b1_int32_j   (acc_j is int32)
+
+To make this consistent with the real expression:
+
+    y_real_j ≈ s_h1 * s_w1 * acc_j
+
+we choose:
+
+    b1_int32_j ≈ b1_real_j / (s_h1 * s_w1)
+
+So in PyTorch:
+
+    b1_int32 = torch.round(b1_real / (s_h1 * s_w1)).to(torch.int32)
+
+For Layer 2, the input to the linear layer is agg2, also with scale s_h1
+(if aggregate uses scale_in = s_h1 and scale_out = s_h1). Weights have
+scale s_w2. So:
+
+    b2_int32 = torch.round(b2_real / (s_h1 * s_w2)).to(torch.int32)
+
+In HLS we will store:
+
+- bias1[o] = b1_int32[o]  (acc_t, usually int32)
+- bias2[o] = b2_int32[o]  (acc_t, int32)
+
+---------------------------------------------
+Step 6 – Export arrays and scales to HLS
+---------------------------------------------
+
+At this point we have:
+
+- Activation scales:
+  - s_x0, s_h1, s_y
+- Weight scales:
+  - s_w1, s_w2
+- Quantized weights:
+  - W1_int8  (hidden_dim x in_dim)
+  - W2_int8  (out_dim x hidden_dim)
+- Quantized biases:
+  - b1_int32 (hidden_dim)
+  - b2_int32 (out_dim)
+
+We map them to `graphsage_network` arguments:
+
+    // Layer 1 parameters
+    const data_t weights1[MAX_FEATURES_HIDDEN][MAX_FEATURES_IN];  // int8
+    const acc_t  bias1[MAX_FEATURES_HIDDEN];                      // int32
+    scale_t      scale_w1;                                        // float
+
+    // Layer 2 parameters
+    const data_t weights2[MAX_FEATURES_OUT][MAX_FEATURES_HIDDEN]; // int8
+    const acc_t  bias2[MAX_FEATURES_OUT];                         // int32
+    scale_t      scale_w2;                                        // float
+
+    ...
+    scale_t scale_in;       // s_x0
+    scale_t scale_hidden;   // s_h1
+    scale_t scale_out;      // s_y
+
+Where:
+
+    scale_in     = s_x0
+    scale_hidden = s_h1
+    scale_out    = s_y
+    scale_w1     = s_w1
+    scale_w2     = s_w2
+
+And the arrays are filled with the Python-exported W1_int8, W2_int8,
+b1_int32, b2_int32 (with zero-padding if needed).
+
+---------------------------------------------
+Step 7 – Requantization inside HLS linear layers
+---------------------------------------------
+
+Currently your HLS code (simplified) does:
+
+    acc = bias[o];
+    for i:
+        acc += input_int8[i] * weight_int8[o][i];
+    output_int8 = clamp_to_int8(acc);
+
+This is wrong for INT8 quantization because `acc` becomes very large and
+is directly clamped to [-128, 127], saturating almost everything.
+
+Instead, given the scales:
+
+- Layer 1 linear:
+  - input scale:  scale_hidden (agg1’s scale)
+  - weight scale: scale_w1
+
+Real value:
+
+    y_real = acc * (scale_hidden * scale_w1)
+
+Then we quantize this real value to some output scale (e.g. we keep using
+scale_hidden or introduce a new one). Using your helper:
+
+    inline data_t quantize(float value, scale_t scale) {
+        int32_t q = (int32_t)(value / scale + 0.5f);
+        if (q > INT8_MAX) return INT8_MAX;
+        if (q < INT8_MIN) return INT8_MIN;
+        return (data_t)q;
+    }
+
+The corrected linear part in HLS becomes:
+
+Layer 1:
+
+    LIN1_N: for (int n = 0; n < num_nodes; n++) {
+        LIN1_O: for (int o = 0; o < MAX_FEATURES_HIDDEN; o++) {
+            #pragma HLS PIPELINE II=1
+            acc_t acc = bias1[o];  // int32
+
+            LIN1_I: for (int i = 0; i < MAX_FEATURES_IN; i++) {
+                acc += (acc_t)agg1[n][i] * (acc_t)weights1[o][i];
+            }
+
+            // Requantization:
+            float y_real = (float)acc * (scale_hidden * scale_w1);
+
+            // Quantize to hidden scale again (or choose another)
+            hidden[n][o] = quantize(y_real, scale_hidden);
+        }
+    }
+
+Layer 2:
+
+    LIN2_N: for (int n = 0; n < num_nodes; n++) {
+        LIN2_O: for (int o = 0; o < MAX_FEATURES_OUT; o++) {
+            #pragma HLS PIPELINE II=1
+            acc_t acc = bias2[o];
+
+            LIN2_I: for (int i = 0; i < MAX_FEATURES_HIDDEN; i++) {
+                acc += (acc_t)agg2[n][i] * (acc_t)weights2[o][i];
+            }
+
+            float y_real = (float)acc * (scale_hidden * scale_w2);
+
+            output_buf[n][o] = quantize(y_real, scale_out);
+        }
+    }
+
+Note: aggregate() already does dequantize → multiply by adjacency →
+requantize, so its scales should be used consistently as:
+
+Layer 1 aggregation:
+
+    aggregate(adj_matrix, input_buf, agg1,
+              num_nodes, MAX_FEATURES_IN,
+              scale_in,     // s_x0
+              scale_hidden  // s_h1
+    );
+
+Layer 2 aggregation:
+
+    aggregate(adj_matrix, hidden, agg2,
+              num_nodes, MAX_FEATURES_HIDDEN,
+              scale_hidden, // s_h1
+              scale_hidden  // s_h1
+    );
+
+-------------------------------------------------------------------------------
+5. TL;DR recipe
+-------------------------------------------------------------------------------
+
+1. Train a SAGEConv-based model in PyG with:
+
+       aggr="mean", root_weight=False, project=False, normalize=False
+
+2. Calibrate activation ranges on representative data to compute:
+
+       s_x0, s_h1, s_y
+   via max absolute activation / 127.
+
+3. Extract real weights and biases:
+
+       W1_real = conv1.lin_l.weight
+       b1_real = conv1.lin_l.bias
+       W2_real = conv2.lin_l.weight
+       b2_real = conv2.lin_l.bias
+
+4. Quantize weights:
+
+       s_w1   = max(|W1_real|)/127
+       W1_int8 = round(W1_real / s_w1)
+
+       s_w2   = max(|W2_real|)/127
+       W2_int8 = round(W2_real / s_w2)
+
+5. Quantize biases into accumulator domain:
+
+       b1_int32 = round(b1_real / (s_h1 * s_w1))
+       b2_int32 = round(b2_real / (s_h1 * s_w2))
+
+6. Export to HLS:
+
+       scale_in     = s_x0
+       scale_hidden = s_h1
+       scale_out    = s_y
+       scale_w1     = s_w1
+       scale_w2     = s_w2
+
+       weights1 = W1_int8
+       bias1    = b1_int32
+       weights2 = W2_int8
+       bias2    = b2_int32
+
+7. In HLS, modify the linear layers to:
+
+   - accumulate in int32: acc = sum(input_int8 * weight_int8) + bias_int32,
+   - convert to real with acc * (input_scale * weight_scale),
+   - quantize to the next activation scale via your quantize() function.
+
+This avoids saturation of the accumulator into int8, and ensures your
+HLS hardware implementation matches the quantized PyTorch Geometric
+GraphSAGE model.

@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# PyTorch
+*.pth
+*.pt
+
+# Datasets
+data/
+
+# Generated outputs
+outputs/
+models/
+tests/test_vectors/
+
+# HLS
+hls/graphsage_hls/
+hls/*.log
+hls/testbench
+hls/*.exe
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Build directory
+build/
+
+
+# Build directory
+build/

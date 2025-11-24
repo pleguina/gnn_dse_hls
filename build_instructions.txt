@@ -1,0 +1,113 @@
+Plan de trabajo: de un modelo GraphSAGE en CPU a un prototipo en FPGA (versión TXT)
+
+0. Objetivo
+
+* Crear un modelo GNN pequeño en CPU.
+* Aplicar pruning y cuantización orientados a FPGA.
+* Usar un grafo fijo y pequeño como base para hardware.
+* Implementar un modelo GraphSAGE reducido en HLS.
+* Generar un testbench para verificar exactitud bit a bit.
+
+1. Preparación del entorno
+
+* Entorno Python (conda/venv).
+* Instalar PyTorch, PyTorch Geometric, NumPy.
+* Dataset elegido: Cora.
+
+2. Definición de la tarea y dataset
+
+* Cora es un dataset estándar para clasificación de nodos.
+* Contiene:
+
+  * x: features de nodos.
+  * edge_index: aristas.
+  * y: etiquetas.
+* Divisiones train/val/test ya incluidas.
+
+3. Diseño del modelo base GraphSAGE en CPU
+
+* Arquitectura inicial:
+
+  * SAGEConv(F_in, F_hidden)
+  * ReLU
+  * Dropout (solo entrenamiento)
+  * SAGEConv(F_hidden, F_out)
+* Entrenar con Adam + CrossEntropyLoss.
+* Guardar pesos del modelo base.
+
+4. Adaptación del modelo para FPGA (submodelo reducido)
+
+* Select subgrafo fijo con 16–32 nodos.
+* Reducir F_in (por ejemplo 16):
+
+  * Con PCA.
+  * O capa Linear(1400→16) entrenada.
+* Arquitectura FPGA-friendly:
+
+  * 2 capas SAGE,
+  * F_in = 12–16,
+  * F_hidden = 24,
+  * F_out = 12–16.
+* Reentrenar este modelo reducido.
+
+5. Pruning estructurado
+
+* Pruning de canales completos (estructurado).
+* Procedimiento:
+
+  1. Entrenar modelo reducido sin pruning.
+  2. Aplicar pruning de canales menos importantes.
+  3. Reentrenar (fine-tuning).
+* Exportar arquitectura podada en un archivo de configuración.
+
+6. Cuantización para FPGA
+
+* Cuantización int8 para pesos y activaciones.
+* Acumuladores en int16 o int32.
+* Elegir PTQ o QAT (preferible QAT).
+* Exportar pesos cuantizados y escalas.
+
+7. Especificación hardware del modelo cuantizado
+
+* Grafo fijo → matriz A[N][N] en ROM.
+* Capa GraphSAGE simplificada:
+
+  * Aggregation: agg = A * h (matmul fijo).
+  * Linear: h' = ReLU(agg * W^T + b).
+* Preparar archivos .h o .hpp con A, W y b.
+
+8. Diseño de arquitectura HLS
+
+* Definir parámetros:
+
+  * N = número de nodos.
+  * F_in, F_out.
+  * P_FEAT = features por ciclo.
+* Bloques:
+
+  1. Aggregation.
+  2. Linear + ReLU.
+  3. Top-level de capa SAGE.
+* Interfaz simple con arrays en BRAM.
+
+9. Implementación HLS paso a paso
+
+* Escribir función C++ de referencia con tipos int8/int32.
+* Añadir pipeline y unroll.
+* C-simulation para validar la matemática.
+* C/RTL cosimulation para validar el RTL.
+* Revisar recursos y latencias.
+
+10. Testbench completo
+
+* Desde Python generar vectores h_in y h_out_ref.
+* Guardarlos en .txt o .npy.
+* Testbench C lee h_in, ejecuta HLS y compara con h_out_ref.
+* Automatizar con scripts.
+
+11. Siguientes pasos
+
+* Añadir más capas o arquitecturas.
+* Integrar datos reales del detector.
+* Probar cuantización más extrema (int4).
+* Optimizar paralelismo y reducir latencia.
