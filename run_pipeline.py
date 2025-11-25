@@ -36,7 +36,7 @@ def main():
     parser.add_argument('--skip-analysis', action='store_true',
                        help='Skip model analysis and plotting')
     parser.add_argument('--steps', type=str, default='all',
-                       help='Comma-separated steps to run: train,subgraph,prune,quant,vectors,analyze,all')
+                       help='Comma-separated steps to run: train,train_qat,subgraph,prune,quant,quant_qat,vectors,analyze,all')
 
     args = parser.parse_args()
 
@@ -55,7 +55,7 @@ def main():
 
     success = True
 
-    # Step 1: Train models
+    # Step 1: Train base and reduced models
     if (run_all or 'train' in steps_to_run) and not args.skip_training:
         success = run_command(
             "cd src && python3 train.py",
@@ -63,6 +63,16 @@ def main():
         )
         if not success:
             return 1
+
+    # Step 1b: Train QAT model
+    if (run_all or 'train_qat' in steps_to_run) and not args.skip_training:
+        success = run_command(
+            "cd src && python3 train_qat.py",
+            "Training QAT Model (Quantization-Aware Training)"
+        )
+        if not success:
+            print("\n[WARNING] QAT training failed, but continuing...")
+            # Don't return, continue with other steps
 
     # Step 2: Extract subgraph
     if run_all or 'subgraph' in steps_to_run:
@@ -82,23 +92,32 @@ def main():
         if not success:
             print("\n[WARNING] Pruning failed, but continuing...")
 
-    # Step 4: Quantize model (both versions)
+    # Step 4: Quantize model with PTQ (Post-Training Quantization)
     if run_all or 'quant' in steps_to_run:
         # Quantize HLS-compatible model (no root_weight)
         success = run_command(
             "cd src && python3 quantization.py",
-            "Quantizing Model to INT8 (HLS-compatible, no root_weight)"
+            "PTQ: Quantizing Model to INT8 (Post-Training Quantization)"
         )
         if not success:
             return 1
-        
+
         # Quantize standard model (with root_weight)
         success = run_command(
             "cd src && python3 quantization.py --use-root-weight",
-            "Quantizing Model to INT8 (with root_weight)"
+            "PTQ: Quantizing Model to INT8 (with root_weight)"
         )
         if not success:
-            print("\n[WARNING] Quantization with root_weight failed, but continuing...")
+            print("\n[WARNING] PTQ with root_weight failed, but continuing...")
+
+    # Step 4b: Export QAT quantized model
+    if run_all or 'quant_qat' in steps_to_run:
+        success = run_command(
+            "cd src && python3 quantization_qat.py",
+            "QAT: Exporting Quantized Weights and Test Vectors"
+        )
+        if not success:
+            print("\n[WARNING] QAT export failed, but continuing...")
 
     # Step 5: Generate test vectors
     if run_all or 'vectors' in steps_to_run:
@@ -123,25 +142,33 @@ def main():
     print("Pipeline Execution Complete!")
     print("="*60)
     print("\nGenerated artifacts:")
+    print("\n1. FLOAT BASELINE MODEL:")
     print("  - build/models/base_graphsage_best.pth")
-    print("  - build/models/reduced_graphsage_best.pth")
-    print("  - build/subgraph/")
-    print("  - build/quantized/")
-    print("  - build/plots/ (visualization plots)")
-    print("  - build/hls/weights.h")
+    print("  - build/models/reduced_graphsage_no_root_best.pth")
+    print("\n2. PTQ (POST-TRAINING QUANTIZATION):")
+    print("  - build/quantized/ (weights and test vectors)")
     print("  - build/test_vectors/")
-    print("\nVisualization plots:")
-    print("  - build/plots/base_model_training.png")
-    print("  - build/plots/reduced_model_training.png")
-    print("  - build/plots/model_comparison.png")
-    print("  - build/plots/efficiency_analysis.png")
-    print("  - build/plots/accuracy_degradation.png")
-    print("  - build/plots/summary_report.png")
+    print("\n3. QAT (QUANTIZATION-AWARE TRAINING):")
+    print("  - build/models/reduced_graphsage_qat_no_root_best.pth")
+    print("  - build/quantized_qat/ (weights and biases)")
+    print("  - build/test_vectors_qat/ (test vectors and scales)")
+    print("\n4. VISUALIZATION AND ANALYSIS:")
+    print("  - build/plots/ (training curves and comparisons)")
+    print("  - build/subgraph/")
+    print("  - build/hls/weights.h")
+    print("\nKey files for FPGA HLS implementation (QAT recommended):")
+    print("  - build/quantized_qat/weights_layer{1,2}_qat.txt")
+    print("  - build/quantized_qat/bias_layer{1,2}_qat.txt")
+    print("  - build/test_vectors_qat/network_input_qat.txt")
+    print("  - build/test_vectors_qat/network_output_reference_qat.txt")
+    print("  - build/test_vectors_qat/edge_index_qat.txt")
+    print("  - build/test_vectors_qat/scales_qat.txt")
     print("\nNext steps:")
-    print("  1. Review plots in build/plots/")
-    print("  2. Check build/plots/model_stats.json for detailed metrics")
-    print("  3. Run HLS C simulation: cd hls && vitis_hls -f run_csim.tcl")
-    print("  4. See README.md for detailed usage")
+    print("  1. Review training plots in build/plots/")
+    print("  2. Compare FLOAT vs PTQ vs QAT accuracy")
+    print("  3. Use QAT artifacts for HLS implementation (recommended)")
+    print("  4. Run HLS C simulation: cd hls && vitis_hls -f run_csim.tcl")
+    print("  5. See QAT_scope.txt for HLS integration details")
     print("="*60)
 
     return 0

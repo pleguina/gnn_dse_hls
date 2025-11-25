@@ -1,0 +1,474 @@
+PURPOSE AND SCOPE
+
+This document defines the fixed interface between the Python GraphSAGE pipeline
+(PyTorch Geometric) and the FPGA HLS implementation.
+
+The goal is:
+
+To ensure that any change in the Python training/quantization pipeline still
+produces test vectors and weight files that are compatible with the HLS design.
+
+To guarantee that, if the HLS implementation follows this interface and the
+integer arithmetic rules, its outputs will match the Python QAT model outputs
+up to small quantization error (±1 LSB in INT8 domain).
+
+This interface is defined for:
+
+A Reduced GraphSAGE model:
+
+Input features: F_in (projected dimension, e.g. 16)
+
+Hidden features: F_hidden (e.g. 24)
+
+Output features: F_out (number of classes, e.g. 7)
+
+A fixed subgraph of the training graph:
+
+N nodes (e.g. 8 or 32, but constant within each experiment)
+
+Static adjacency for test (same edges every time)
+
+INT8 quantization with INT32 accumulators, using QAT (Quantization-Aware Training)
+to align the learned weights and scales with the constraints of the integer
+hardware implementation.
+
+This document does not depend on how the QAT training is implemented internally,
+only on the resulting exported artifacts and their meaning.
+
+MODEL VARIANTS AND FILE LOCATIONS
+
+The repository produces three main model variants:
+
+FLOAT BASELINE MODEL
+
+Trained in full precision (float32).
+
+Checkpoint:
+
+build/models/reduced_graphsage_no_root_best.pth
+
+Used as the high-accuracy reference.
+
+PTQ (POST-TRAINING QUANTIZATION) MODEL
+
+Takes the FLOAT model and applies quantization after training.
+
+Exports quantized weights and test vectors in:
+
+build/quantized/...
+
+build/test_vectors/...
+
+This path is mostly for analysis and comparison.
+
+QAT (QUANTIZATION-AWARE TRAINING) MODEL
+
+Uses a QAT version of GraphSAGE layer, trained with fake quantization.
+
+Checkpoint:
+
+build/models/reduced_graphsage_qat_best.pth
+
+Exports QAT-consistent weights and test vectors in:
+
+build/quantized_qat/...
+
+build/test_vectors_qat/...
+
+For the FPGA implementation, the recommended deployment target is the QAT model,
+using artifacts from:
+
+build/quantized_qat/ (weights, biases, scales)
+
+build/test_vectors_qat/ (inputs, adjacency, edge_index, reference outputs)
+
+GRAPH AND TEST VECTOR SHAPE
+
+The HLS implementation operates on a fixed-size subgraph extracted from the
+original dataset (e.g. Cora). The following dimensions are fixed per experiment:
+
+N_NODES: number of nodes in the subgraph (e.g. 8 or 32)
+
+F_IN: input feature dimension (after projection, e.g. 16)
+
+F_HID: hidden feature dimension (e.g. 24)
+
+F_OUT: output feature dimension / number of classes (e.g. 7)
+
+N_EDGES: number of edges in the subgraph (from edge_index_qat.txt)
+
+The HLS design must assume that:
+
+The number of nodes N_NODES is fixed and known at synthesis time.
+
+The feature dimensions F_IN, F_HID, F_OUT are fixed and known at synthesis time.
+
+The adjacency pattern is static for a given test (same edges, same ordering).
+
+EXPORTED FILES AND FORMATS
+
+All files are ASCII text with whitespace-separated numbers.
+
+4.1. Test vector directory (QAT version)
+
+Directory:
+
+build/test_vectors_qat/
+
+Files:
+
+network_input_qat.txt
+
+Shape: N_NODES rows, each row has F_IN INT8 values.
+
+Each line corresponds to one node's input feature vector.
+
+Values are integers in range [-128, 127], representing quantized features:
+x_int8 = round(x_float / scale_in)
+
+HLS must load these as int8_t (or equivalent).
+
+network_output_reference_qat.txt
+
+Shape: N_NODES rows, each row has F_OUT INT8 values.
+
+Each line is the quantized reference output for one node:
+y_int8_ref = quantize(y_float_QAT, scale_out_QAT)
+
+Used to check correctness of HLS implementation.
+
+adj_matrix_qat.txt
+
+Shape: N_NODES x N_NODES matrix, float values.
+
+Typically row-normalized adjacency (mean aggregation).
+
+Used for debugging or as a dense representation; HLS can use it or not.
+
+edge_index_qat.txt
+
+Shape: 2 x N_EDGES.
+
+First line: a sequence of N_EDGES integers → source node indices.
+
+Second line: a sequence of N_EDGES integers → target node indices.
+
+Edge order is fixed and must be used as-is in the HLS model.
+
+GraphSAGE uses "source_to_target" flow: messages from src to dst.
+
+scales_qat.txt
+
+Text file listing the quantization scales used by the pipeline.
+
+Contains lines such as:
+scale_in: <float>
+scale_hidden: <float>
+scale_out: <float>
+scale_w1: <float>
+scale_w2: <float>
+
+Interpretation:
+
+scale_in: scale for input features to layer 1.
+
+scale_hidden:scale for activations after layer 1.
+
+scale_out: scale for activations after layer 2 (logits).
+
+scale_w1: scale for weights of layer 1 (lin_l and/or lin_r).
+
+scale_w2: scale for weights of layer 2.
+
+The exact naming can be extended if there are separate scales per tensor:
+
+scale_w1_lin_l
+scale_w1_lin_r
+scale_w2_lin_l
+...
+
+In all cases, scales are positive floats, typically derived so that:
+max(|tensor|) ≈ 127 * scale
+
+4.2. Quantized weight directory (QAT version)
+
+Directory:
+
+build/quantized_qat/
+
+Files (names can be adapted, but must be stable and documented):
+
+weights_layer1_qat.txt
+
+Shape: F_HID x F_IN.
+
+INT8 entries: w1_int8[i][j] in [-128, 127].
+
+Represents lin_l weights of SAGEConv layer 1.
+
+Stored row-major: one row per output feature.
+
+bias_layer1_qat.txt
+
+Shape: F_HID.
+
+INT32 entries: b1_int32[i].
+
+Already quantized to accumulator domain:
+b1_int32[i] ≈ round(b1_float[i] / (scale_in * scale_w1))
+
+weights_layer2_qat.txt
+
+Shape: F_OUT x F_HID.
+
+INT8 entries: w2_int8[k][j].
+
+Represents lin_l weights of SAGEConv layer 2.
+
+bias_layer2_qat.txt
+
+Shape: F_OUT.
+
+INT32 entries: b2_int32[k].
+
+Quantized as:
+b2_int32[k] ≈ round(b2_float[k] / (scale_hidden * scale_w2))
+
+Optional: root weights
+
+If root_weight=True (not recommended for first HLS version), then:
+
+weights_layer1_root_qat.txt
+
+weights_layer2_root_qat.txt
+
+Same INT8 format, with corresponding scales in the scales_qat file.
+
+quant_params_qat.json
+
+JSON file with all scales, zero-points, ranges, and possibly min/max.
+
+Useful for debugging and re-generating test vectors, but not necessary
+for the HLS core as long as the text files above are consumed correctly.
+
+QUANTIZATION CONTRACT
+
+The contract between Python QAT and HLS is defined in terms of:
+
+Storage type
+
+Arithmetic rules
+
+Scaling conventions
+
+5.1. Storage types
+
+Node features:
+
+Input, hidden, and output features are stored as INT8 (signed 8-bit).
+
+Weights:
+
+All linear weights (lin_l, and lin_r if present) are stored as INT8.
+
+Biases:
+
+All biases are stored as INT32, pre-scaled to accumulator domain.
+
+5.2. Quantization / dequantization
+
+For an input feature x_float:
+
+Quantization:
+x_int8 = clip(round(x_float / scale_x), -128, 127)
+
+Dequantization:
+x_float ≈ x_int8 * scale_x
+
+In the HLS implementation, you have two main options:
+
+A) “Float-like” aggregation:
+
+Dequantize inputs to float (fixed-point) for aggregation, then re-quantize.
+
+Conceptually:
+h_agg_float[i] = sum_over_neighbors( adj(i,j) * x_float[j] )
+= sum( adj(i,j) * x_int8[j] * scale_in )
+
+B) Pure integer aggregation with accumulator scaling:
+
+Keep inputs as INT8 and represent adj(i,j) as a rational or fixed-point.
+
+More complex; recommended only if necessary for performance.
+
+For the initial HLS prototype, option A is usually simpler:
+
+Represent adj(i,j) as float or fixed-point.
+
+Use a 32-bit accumulator for the sums.
+
+Apply a single scale factor when converting back to INT8.
+
+5.3. Linear layers and biases
+
+Given:
+
+Input vector to a layer: x_int8 with scale s_in.
+
+Weight matrix: w_int8 with scale s_w.
+
+Bias: b_int32 (already in accumulator domain).
+
+The layer computes an accumulator:
+
+acc[k] = sum_j( x_int8[j] * w_int8[k][j] ) + b_int32[k]
+
+This acc[k] is effectively in the domain:
+
+acc_float ≈ acc[k] * (s_in * s_w)
+
+To convert to an INT8 activation with scale s_out, we do:
+
+y_float = acc_float
+≈ acc[k] * (s_in * s_w)
+
+y_int8 = clip(round( y_float / s_out ), -128, 127)
+≈ clip(round( acc[k] * (s_in * s_w / s_out) ), -128, 127)
+
+In practice:
+
+Precompute a requantization factor:
+rq = s_in * s_w / s_out
+
+In HLS, implement:
+y_int8[k] = clip(round(acc[k] * rq), -128, 127)
+
+This must match the Python QAT export logic.
+
+5.4. Layer-by-layer scales
+
+The following must be consistent:
+
+Between Python export and HLS implementation:
+
+scale_in → used for dequantizing network_input_qat.txt
+
+scale_hidden (layer 1 output)→ used as s_out in layer 1, s_in for layer 2
+
+scale_out (layer 2 output) → used as s_out in layer 2
+
+scale_w1 → weights of layer 1
+
+scale_w2 → weights of layer 2
+
+HLS must not recompute these scales; it must read them from scales_qat.txt
+or hardcode them once extracted.
+
+HLS PROCESSING PIPELINE
+
+For the QAT-compatible HLS implementation, the high-level pipeline is:
+
+Load adjacency and edge_index:
+
+Use edge_index_qat.txt to define message passing pattern.
+
+Layer 1:
+
+Input: x0_int8 (N_NODES x F_IN), scale_in.
+
+Aggregate neighbors (according to GraphSAGE semantics, e.g. mean):
+h_agg (per node, per feature).
+You may implement this in float or fixed point, but the reference assumes
+a float-like aggregation for QAT matching.
+
+Linear + bias in integer domain:
+
+Use w1_int8, b1_int32, scale_w1, scale_in, scale_hidden.
+
+Follow the quantization equations in section 5.3.
+
+Activation (ReLU) in INT8 domain or as part of QAT scheme.
+
+Layer 2:
+
+Input: x1_int8 (N_NODES x F_HID), scale_hidden.
+
+Aggregate neighbors again with the same adjacency.
+
+Linear + bias in integer domain:
+
+Use w2_int8, b2_int32, scale_w2, scale_hidden, scale_out.
+
+Output: x2_int8 (N_NODES x F_OUT) with scale_out.
+
+Comparison:
+
+HLS writes x2_int8 to an output file or memory.
+
+Compare against network_output_reference_qat.txt, allowing error of ±1 LSB.
+
+VALIDATION STRATEGY
+
+Before declaring the HLS implementation correct, the following checks must pass:
+
+Python QAT vs QAT test vectors:
+
+python_testbench.py reconstructs the exact forward pass using
+ReducedGraphSAGEQAT and the exported test vectors.
+
+It must reproduce network_output_reference_qat.txt up to ±1 LSB per logit.
+
+Python QAT integer-sim vs HLS:
+
+In Python, implement the exact integer pipeline (same multiplications,
+same scales, same rounding) that you intend to use in HLS.
+
+Check that this integer pipeline matches the QAT PyG model outputs.
+
+Only once this is matching should you port it to HLS.
+
+HLS vs QAT test vectors:
+
+Run C-simulation and/or RTL simulation on the HLS core.
+
+Use network_input_qat.txt and edge_index_qat.txt as input.
+
+Compare against network_output_reference_qat.txt, accepting ±1 LSB.
+
+Once these three steps match, the HLS implementation is considered faithful
+to the QAT-trained GraphSAGE model under the defined INT8/INT32 quantization
+contract.
+
+NOTES AND EXTENSIONS
+
+Projection layer:
+
+The projection (1433 → F_IN) is applied offline in Python when generating
+test vectors. HLS receives already-projected features (F_IN), so it does
+not implement the projection layer.
+
+Root weights:
+
+For simplicity and first FPGA implementations, root_weight=False is
+recommended (no lin_r branch).
+
+If root_weight=True is needed later, extend the weight export and HLS
+pipeline accordingly, keeping the same quantization rules.
+
+Multiple layers:
+
+This document is written for two-layer GraphSAGE (Conv1 + Conv2).
+
+Extending to more layers follows the same pattern: each layer has its own
+{scale_in, scale_w, scale_out, weights, biases}, and the HLS pipeline
+chains them sequentially.
+
+Different aggregation:
+
+Current assumption: mean aggregation with normalized adjacency.
+
+If another aggregation function is used (sum, max, etc.), the exported
+adjacency and/or layer scaling may change, but the integration pattern
+remains the same.
+
+END OF FILE

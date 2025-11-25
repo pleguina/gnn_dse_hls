@@ -10,9 +10,14 @@ import os
 import sys
 
 from model_base import GraphSAGE, ReducedGraphSAGE
+from model_qat import ReducedGraphSAGEQAT
 from torch_geometric.datasets import Planetoid
 from torch_geometric.transforms import NormalizeFeatures
+from torch_geometric.data import Data
 from quantization import quantize_tensor
+
+# Fix for PyTorch 2.6+ weights_only default change
+torch.serialization.add_safe_globals([Data])
 from visualization import (
     plot_model_comparison,
     plot_efficiency_analysis,
@@ -214,7 +219,61 @@ def main():
     print(f"  Memory: {quant_memory:.2f} MB")
     print(f"  Memory Reduction: {(1 - quant_memory/reduced_memory)*100:.1f}%")
 
-    # 4. Analyze Pruned Model (if exists)
+    # 4. Analyze QAT Model
+    print("\n" + "="*60)
+    print("Analyzing QAT Model (Quantization-Aware Training)")
+    print("="*60)
+
+    try:
+        qat_checkpoint = torch.load('../build/models/reduced_graphsage_qat_no_root_best.pth', weights_only=False)
+
+        # Reconstruct QAT model
+        qat_model = ReducedGraphSAGEQAT(
+            in_channels=dataset.num_features,
+            in_channels_reduced=qat_checkpoint['in_channels_reduced'],
+            hidden_channels=qat_checkpoint['hidden_channels'],
+            out_channels=qat_checkpoint['out_channels'],
+            dropout=0.5,
+            use_projection=True,
+            root_weight=qat_checkpoint['root_weight'],
+        )
+        qat_model.load_state_dict(qat_checkpoint['model_state_dict'])
+
+        # Evaluate with fake quantization enabled (simulates INT8)
+        qat_model.eval()
+        qat_model.enable_fake_quant()
+
+        with torch.no_grad():
+            out = qat_model(data.x, data.edge_index)
+            pred = out.argmax(dim=1)
+            test_correct = pred[data.test_mask] == data.y[data.test_mask]
+            qat_acc = int(test_correct.sum()) / int(data.test_mask.sum())
+
+        qat_params = count_parameters(qat_model)
+        qat_memory = estimate_model_size(qat_model, quantized=True)
+        qat_breakdown = get_layer_breakdown(qat_model)
+
+        model_stats.append({
+            'name': 'QAT',
+            'accuracy': qat_acc,
+            'parameters': qat_params,
+            'memory_mb': qat_memory,
+            'layer_breakdown': qat_breakdown
+        })
+
+        print(f"  ✓ Loaded QAT model")
+        print(f"  Accuracy: {qat_acc*100:.2f}% (INT8-simulated)")
+        print(f"  Parameters: {qat_params:,}")
+        print(f"  Memory: {qat_memory:.2f} MB (INT8)")
+        print(f"  Validation Acc (from training): {qat_checkpoint['val_acc']*100:.2f}%")
+        if 'val_acc_float' in qat_checkpoint:
+            print(f"  Float Acc (from training): {qat_checkpoint['val_acc_float']*100:.2f}%")
+            print(f"  Quantization Gap: {(qat_checkpoint['val_acc_float'] - qat_checkpoint['val_acc'])*100:.2f}%")
+    except Exception as e:
+        print(f"  ✗ Could not load QAT model: {e}")
+        print("  Run 'python train_qat.py' first to train QAT model")
+
+    # 5. Analyze Pruned Model (if exists)
     print("\n" + "="*60)
     print("Analyzing Pruned Model")
     print("="*60)
