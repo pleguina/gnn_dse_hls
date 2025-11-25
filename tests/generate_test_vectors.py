@@ -8,6 +8,10 @@ import numpy as np
 import os
 import sys
 
+# Set random seed for reproducibility
+torch.manual_seed(42)
+np.random.seed(42)
+
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
@@ -133,6 +137,10 @@ def generate_test_vectors_for_network(model, subgraph_data, output_dir):
 
     # Save adjacency matrix
     save_matrix(adj_matrix, f'{output_dir}/adj_matrix.txt')
+    
+    # Save edge_index for exact reproduction
+    edge_index_np = subgraph_data['edge_index']
+    save_int_matrix(edge_index_np.T, f'{output_dir}/edge_index.txt')
 
     # Save quantized input features
     save_int_matrix(features_quant_np, f'{output_dir}/network_input.txt')
@@ -206,9 +214,9 @@ if __name__ == '__main__':
     dataset = Planetoid(root='./data', name='Cora', transform=NormalizeFeatures())
     data = dataset[0]
 
-    # Extract subgraph
+    # Extract subgraph with fixed center node for reproducibility
     print("Extracting subgraph...")
-    subgraph_data = extract_fixed_subgraph(data, num_nodes=32, num_hops=2)
+    subgraph_data = extract_fixed_subgraph(data, num_nodes=32, center_node=0, num_hops=2)
 
     # Load trained reduced model
     print("Loading trained model...")
@@ -218,13 +226,15 @@ if __name__ == '__main__':
         hidden_channels=24,
         out_channels=dataset.num_classes,
         dropout=0.5,
-        use_projection=True
+        use_projection=True,
+        root_weight=False  # HLS-compatible version
     )
 
     try:
-        checkpoint = torch.load('../build/models/reduced_graphsage_best.pth')
+        checkpoint = torch.load('../build/models/reduced_graphsage_no_root_best.pth')
         model.load_state_dict(checkpoint['model_state_dict'])
-        print("Loaded trained model from ./models/reduced_graphsage_best.pth")
+        print("Loaded trained model from ../build/models/reduced_graphsage_no_root_best.pth")
+        print("Using HLS-compatible model (no root_weight)")
     except Exception as e:
         print(f"Warning: Could not load trained model: {e}")
         print("Using random weights for test vector generation")

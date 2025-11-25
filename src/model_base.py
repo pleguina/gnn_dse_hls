@@ -49,13 +49,18 @@ class ReducedGraphSAGE(torch.nn.Module):
     - ReLU
     - Dropout (only during training)
     - SAGEConv(F_hidden, F_out)
+    
+    Args:
+        root_weight: If True (default), uses W_l * h_agg + b_l + W_r * x_i
+                     If False, uses W_l * h_agg + b_l (HLS-compatible, simpler)
     """
 
     def __init__(self, in_channels, in_channels_reduced, hidden_channels,
-                 out_channels, dropout=0.5, use_projection=True):
+                 out_channels, dropout=0.5, use_projection=True, root_weight=True):
         super(ReducedGraphSAGE, self).__init__()
 
         self.use_projection = use_projection
+        self.root_weight = root_weight
 
         if use_projection:
             self.projection = torch.nn.Linear(in_channels, in_channels_reduced)
@@ -63,8 +68,17 @@ class ReducedGraphSAGE(torch.nn.Module):
         else:
             conv_in = in_channels
 
-        self.conv1 = SAGEConv(conv_in, hidden_channels)
-        self.conv2 = SAGEConv(hidden_channels, out_channels)
+        # SAGEConv with configurable root_weight for HLS compatibility
+        self.conv1 = SAGEConv(conv_in, hidden_channels, 
+                             aggr='mean', 
+                             root_weight=root_weight,
+                             normalize=False,
+                             project=False)
+        self.conv2 = SAGEConv(hidden_channels, out_channels,
+                             aggr='mean',
+                             root_weight=root_weight,
+                             normalize=False,
+                             project=False)
         self.dropout = dropout
 
     def forward(self, x, edge_index):

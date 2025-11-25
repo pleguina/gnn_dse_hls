@@ -128,12 +128,10 @@ def save_quantized_weights(quantized_weights, quant_params, output_dir='../build
     print(f"\nQuantized weights saved to {output_dir}/")
 
 
-def export_weights_as_c_header(quantized_weights, quant_params, output_dir='../build/hls', model_dims=None):
+def export_weights_as_c_header(quantized_weights, quant_params, header_file='../build/hls/weights.h', model_dims=None):
     """Export quantized weights as C/C++ header file for HLS."""
     import os
-    os.makedirs(output_dir, exist_ok=True)
-
-    header_file = f'{output_dir}/weights.h'
+    os.makedirs(os.path.dirname(header_file), exist_ok=True)
 
     with open(header_file, 'w') as f:
         f.write("// Auto-generated quantized weights for FPGA implementation\n")
@@ -187,6 +185,22 @@ def export_weights_as_c_header(quantized_weights, quant_params, output_dir='../b
 
 
 if __name__ == '__main__':
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Quantize GraphSAGE model')
+    parser.add_argument('--use-root-weight', action='store_true', 
+                       help='Use model with root_weight=True (default is False for HLS)')
+    args = parser.parse_args()
+    
+    root_weight = args.use_root_weight
+    suffix = "" if root_weight else "_no_root"
+    model_path = f'../build/models/reduced_graphsage{suffix}_best.pth'
+    
+    print(f"Using model: {model_path}")
+    print(f"root_weight = {root_weight}")
+    if not root_weight:
+        print("NOTE: This is the HLS-compatible version (simpler formula)")
+    
     # Load reduced model
     model = ReducedGraphSAGE(
         in_channels=1433,
@@ -194,23 +208,26 @@ if __name__ == '__main__':
         hidden_channels=24,
         out_channels=7,
         dropout=0.5,
-        use_projection=True
+        use_projection=True,
+        root_weight=root_weight
     )
 
     # Load trained weights
     try:
-        checkpoint = torch.load('../build/models/reduced_graphsage_best.pth')
+        checkpoint = torch.load(model_path)
         model.load_state_dict(checkpoint['model_state_dict'])
-        print("Loaded trained model from ./models/reduced_graphsage_best.pth")
-    except:
-        print("Warning: Could not load trained model. Using random weights.")
+        print(f"Loaded trained model from {model_path}")
+    except Exception as e:
+        print(f"Warning: Could not load trained model: {e}")
+        print("Using random weights.")
 
     # Quantize model
     print("\nQuantizing model to INT8...")
     quantized_weights, quant_params = quantize_model_weights(model, num_bits=8)
 
-    # Save quantized weights
-    save_quantized_weights(quantized_weights, quant_params)
+    # Save quantized weights with suffix
+    output_dir = f'../build/quantized{suffix}'
+    save_quantized_weights(quantized_weights, quant_params, output_dir=output_dir)
 
     # Prepare model dimensions
     model_dims = {
@@ -221,6 +238,10 @@ if __name__ == '__main__':
     }
 
     # Export as C header with dimensions
-    export_weights_as_c_header(quantized_weights, quant_params, model_dims=model_dims)
+    header_path = f'../build/hls/weights{suffix}.h'
+    export_weights_as_c_header(quantized_weights, quant_params, 
+                               header_file=header_path, model_dims=model_dims)
 
     print("\nQuantization complete!")
+    print(f"Output directory: {output_dir}")
+    print(f"C header: {header_path}")

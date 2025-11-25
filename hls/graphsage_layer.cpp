@@ -64,18 +64,48 @@ void matmul_int8(
 }
 
 /**
- * Aggregation: Aggregate neighbor features using adjacency matrix
+ * Aggregation: Aggregate neighbor features using adjacency matrix (for input layer)
  * For normalized adjacency matrix with float values
- * Uses MAX_FEATURES_HIDDEN for buffer size
  */
-void aggregate(
+void aggregate_input(
+    const scale_t adj_matrix[MAX_NODES][MAX_NODES],
+    const data_t features[MAX_NODES][MAX_FEATURES_IN],
+    data_t agg_out[MAX_NODES][MAX_FEATURES_IN],
+    int num_nodes,
+    int num_features,
+    scale_t scale_in,   // scale of `features`
+    scale_t scale_out   // desired scale of `agg_out`
+) {
+    AGG_LOOP_I: for (int i = 0; i < num_nodes; i++) {
+        AGG_LOOP_F: for (int f = 0; f < num_features; f++) {
+            #pragma HLS PIPELINE II=1
+            float sum = 0.0f;
+
+            AGG_LOOP_J: for (int j = 0; j < num_nodes; j++) {
+                float adj_val = adj_matrix[i][j];
+                if (adj_val != 0.0f) {
+                    float feat_val = dequantize(features[j][f], scale_in);
+                    sum += adj_val * feat_val;
+                }
+            }
+
+            agg_out[i][f] = quantize(sum, scale_out);
+        }
+    }
+}
+
+/**
+ * Aggregation: Aggregate neighbor features using adjacency matrix (for hidden layer)
+ * For normalized adjacency matrix with float values
+ */
+void aggregate_hidden(
     const scale_t adj_matrix[MAX_NODES][MAX_NODES],
     const data_t features[MAX_NODES][MAX_FEATURES_HIDDEN],
     data_t agg_out[MAX_NODES][MAX_FEATURES_HIDDEN],
     int num_nodes,
     int num_features,
-    scale_t scale_in,
-    scale_t scale_out
+    scale_t scale_in,   // scale of `features`
+    scale_t scale_out   // desired scale of `agg_out`
 ) {
     AGG_LOOP_I: for (int i = 0; i < num_nodes; i++) {
         AGG_LOOP_F: for (int f = 0; f < num_features; f++) {
@@ -84,18 +114,20 @@ void aggregate(
             float sum = 0.0f;
 
             AGG_LOOP_J: for (int j = 0; j < num_nodes; j++) {
-                #pragma HLS UNROLL factor=4
-                if (adj_matrix[i][j] != 0.0f) {
+                #pragma HLS UNROLL  // full unroll over neighbors (small N)
+                scale_t a_ij = adj_matrix[i][j];
+                if (a_ij != 0.0f) {
                     float feat_val = dequantize(features[j][f], scale_in);
-                    sum += adj_matrix[i][j] * feat_val;
+                    sum += a_ij * feat_val;
                 }
             }
 
-            // Quantize output
+            // Quantize aggregated value to output scale:
             agg_out[i][f] = quantize(sum, scale_out);
         }
     }
 }
+
 
 /**
  * Linear transformation: out = in * W^T + bias
@@ -161,21 +193,23 @@ void graphsage_network(
     const scale_t adj_matrix[MAX_NODES][MAX_NODES],
     const data_t input[MAX_NODES][MAX_FEATURES_IN],
 
-    // Layer 1 parameters
+    // Layer 1 parameters (conv1.lin_l)
     const data_t weights1[MAX_FEATURES_HIDDEN][MAX_FEATURES_IN],
-    const acc_t bias1[MAX_FEATURES_HIDDEN],
-    scale_t scale_w1,
+    const acc_t  bias1[MAX_FEATURES_HIDDEN],
+    scale_t      scale_w1, // s_w1
 
-    // Layer 2 parameters
+    // Layer 2 parameters (conv2.lin_l)
     const data_t weights2[MAX_FEATURES_OUT][MAX_FEATURES_HIDDEN],
-    const acc_t bias2[MAX_FEATURES_OUT],
-    scale_t scale_w2,
+    const acc_t  bias2[MAX_FEATURES_OUT],
+    scale_t      scale_w2, // s_w2
 
     data_t output[MAX_NODES][MAX_FEATURES_OUT],
     int num_nodes,
-    scale_t scale_in,
-    scale_t scale_hidden,
-    scale_t scale_out
+
+    // Activation scales:
+    scale_t scale_in,      // s_x0
+    scale_t scale_hidden,  // s_h1
+    scale_t scale_out      // s_y
 ) {
     #pragma HLS INTERFACE mode=s_axilite port=return
     #pragma HLS INTERFACE mode=bram port=adj_matrix
@@ -186,93 +220,96 @@ void graphsage_network(
     #pragma HLS INTERFACE mode=bram port=bias2
     #pragma HLS INTERFACE mode=bram port=output
 
-    // All intermediate buffers use MAX_FEATURES_HIDDEN for maximum size
-    static data_t input_buf[MAX_NODES][MAX_FEATURES_HIDDEN];
-    static data_t hidden[MAX_NODES][MAX_FEATURES_HIDDEN];
-    static data_t agg1[MAX_NODES][MAX_FEATURES_HIDDEN];
-    static data_t agg2[MAX_NODES][MAX_FEATURES_HIDDEN];
-    static data_t output_buf[MAX_NODES][MAX_FEATURES_HIDDEN];
+    // Intermediate buffers with correct sizes
+    static data_t agg1[MAX_NODES][MAX_FEATURES_IN];      // Aggregated input
+    static data_t hidden[MAX_NODES][MAX_FEATURES_HIDDEN]; // Layer 1 output
+    static data_t agg2[MAX_NODES][MAX_FEATURES_HIDDEN];   // Aggregated hidden
+    static data_t output_buf[MAX_NODES][MAX_FEATURES_OUT]; // Final output
 
-    #pragma HLS ARRAY_PARTITION variable=input_buf cyclic factor=4 dim=2
+    #pragma HLS ARRAY_PARTITION variable=agg1   cyclic factor=4 dim=2
     #pragma HLS ARRAY_PARTITION variable=hidden cyclic factor=4 dim=2
-    #pragma HLS ARRAY_PARTITION variable=agg1 cyclic factor=4 dim=2
-    #pragma HLS ARRAY_PARTITION variable=agg2 cyclic factor=4 dim=2
+    #pragma HLS ARRAY_PARTITION variable=agg2   cyclic factor=4 dim=2
     #pragma HLS ARRAY_PARTITION variable=output_buf cyclic factor=4 dim=2
 
-    // ========== Layer 1: Fused Aggregate + Linear (like PyG SAGEConv) ==========
-    // PyG does: out = W * (aggregate(x) || x)
-    // We do it in one pass to avoid double quantization
+    // ========== Layer 1: Aggregate (mean) ==========
+    // PyG: h1_agg = mean_{j in N(i)} x_j
+    // HLS: agg1 = A * input (with dequantize/quantize inside `aggregate`)
+    aggregate_input(
+        adj_matrix,
+        input,
+        agg1,
+        num_nodes,
+        MAX_FEATURES_IN,
+        scale_in,     // input is in scale_in
+        scale_hidden  // agg1 will be in scale_hidden
+    );
 
-    LAYER1_N: for (int n = 0; n < num_nodes; n++) {
-        LAYER1_O: for (int o = 0; o < MAX_FEATURES_HIDDEN; o++) {
+    // ========== Layer 1: Linear transform + ReLU ==========
+    // PyG: h1 = ReLU( W1 * h1_agg + b1 )
+
+    L1_N: for (int n = 0; n < num_nodes; n++) {
+        L1_O: for (int o = 0; o < MAX_FEATURES_HIDDEN; o++) {
             #pragma HLS PIPELINE II=1
 
-            // Accumulate in INT32 to match bias scale
-            // bias was computed as: bias_fp32 / (scale_in * scale_w1)
+            // bias1 was pre-quantized as: b1_real / (scale_hidden * scale_w1)
             acc_t acc = bias1[o];
 
-            // Do aggregation with INT8 math (to match bias scale)
-            LAYER1_NEIGHBOR: for (int j = 0; j < num_nodes; j++) {
-                if (adj_matrix[n][j] != 0.0f) {
-                    LAYER1_FEAT: for (int i = 0; i < MAX_FEATURES_IN; i++) {
-                        // INT8 x INT8 multiply, then scale by adjacency
-                        acc_t product = (acc_t)input[j][i] * (acc_t)weights1[o][i];
-                        acc += (acc_t)(adj_matrix[n][j] * (float)product);
-                    }
-                }
+            // Integer MAC: sum_i agg1[n][i] * weights1[o][i]
+            L1_I: for (int i = 0; i < MAX_FEATURES_IN; i++) {
+                #pragma HLS UNROLL factor=4
+                acc += (acc_t)agg1[n][i] * (acc_t)weights1[o][i];
             }
 
-            // Now acc is in units of: (scale_in * scale_w1) per multiplication
-            // We want output in scale_hidden units
-            // So requantize: acc * (scale_in * scale_w1) / scale_hidden
-            float requant = (scale_in * scale_w1) / scale_hidden;
-            acc_t scaled = (acc_t)(acc * requant);
+            // Real value: y_real = acc * (scale_hidden * scale_w1)
+            float y_real = (float)acc * (scale_hidden * scale_w1);
 
-            // DEBUG: Print first few values
-            if (n == 0 && o == 0) {
-                printf("DEBUG Layer1 [%d][%d]: acc=%d, requant=%f, scaled=%d\n", n, o, (int)acc, requant, (int)scaled);
-            }
+            // Quantize back to int8 in scale_hidden (keep same activation scale)
+            data_t q = quantize(y_real, scale_hidden);
 
-            // Clamp to INT8 and apply ReLU
-            if (scaled < 0) scaled = 0;
-            hidden[n][o] = (data_t)((scaled > INT8_MAX) ? INT8_MAX : ((scaled < INT8_MIN) ? INT8_MIN : scaled));
+            // ReLU in int8
+            if (q < 0) q = 0;
+
+            hidden[n][o] = q;
         }
     }
 
-    // ========== Layer 2: Fused Aggregate + Linear ==========
-    LAYER2_N: for (int n = 0; n < num_nodes; n++) {
-        LAYER2_O: for (int o = 0; o < MAX_FEATURES_OUT; o++) {
+    // ========== Layer 2: Aggregate (mean) ==========
+    // PyG: h2_agg = mean_{j in N(i)} h1_j
+
+    aggregate_hidden(
+        adj_matrix,
+        hidden,
+        agg2,
+        num_nodes,
+        MAX_FEATURES_HIDDEN,
+        scale_hidden, // hidden in scale_hidden
+        scale_hidden  // keep same scale for agg2
+    );
+
+    // ========== Layer 2: Linear transform (no ReLU on final) ==========
+    // PyG: out = W2 * h2_agg + b2
+
+    L2_N: for (int n = 0; n < num_nodes; n++) {
+        L2_O: for (int o = 0; o < MAX_FEATURES_OUT; o++) {
             #pragma HLS PIPELINE II=1
 
-            // Accumulate in INT32 to match bias scale
+            // bias2 was pre-quantized as: b2_real / (scale_hidden * scale_w2)
             acc_t acc = bias2[o];
 
-            // Do aggregation with INT8 math (to match bias scale)
-            LAYER2_NEIGHBOR: for (int j = 0; j < num_nodes; j++) {
-                if (adj_matrix[n][j] != 0.0f) {
-                    LAYER2_FEAT: for (int i = 0; i < MAX_FEATURES_HIDDEN; i++) {
-                        // INT8 x INT8 multiply, then scale by adjacency
-                        acc_t product = (acc_t)hidden[j][i] * (acc_t)weights2[o][i];
-                        acc += (acc_t)(adj_matrix[n][j] * (float)product);
-                    }
-                }
+            L2_I: for (int i = 0; i < MAX_FEATURES_HIDDEN; i++) {
+                #pragma HLS UNROLL factor=4
+                acc += (acc_t)agg2[n][i] * (acc_t)weights2[o][i];
             }
 
-            // Requantize from (scale_hidden * scale_w2) to scale_out
-            float requant = (scale_hidden * scale_w2) / scale_out;
-            acc_t scaled = (acc_t)(acc * requant);
+            // Real value: y_real = acc * (scale_hidden * scale_w2)
+            float y_real = (float)acc * (scale_hidden * scale_w2);
 
-            // DEBUG: Print first few values
-            if (n == 0 && o < 3) {
-                printf("DEBUG Layer2 [%d][%d]: acc=%d, requant=%f, scaled=%d\n", n, o, (int)acc, requant, (int)scaled);
-            }
-
-            // Clamp to INT8 (no ReLU on final output)
-            output_buf[n][o] = (data_t)((scaled > INT8_MAX) ? INT8_MAX : ((scaled < INT8_MIN) ? INT8_MIN : scaled));
+            // Quantize to final output scale
+            output_buf[n][o] = quantize(y_real, scale_out);
         }
     }
 
-    // Copy output from buffer
+    // Copy output
     COPY_OUTPUT: for (int n = 0; n < num_nodes; n++) {
         for (int f = 0; f < MAX_FEATURES_OUT; f++) {
             #pragma HLS PIPELINE

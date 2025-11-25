@@ -196,18 +196,18 @@ bool test_two_layer_network() {
 
     const int num_nodes = 4;  // Number of nodes in test vectors
 
-    // Allocate arrays
-    static scale_t adj_matrix[MAX_NODES][MAX_NODES];
-    static data_t input[MAX_NODES][MAX_FEATURES_IN];
+    // Allocate arrays (zero-initialize for safety)
+    static scale_t adj_matrix[MAX_NODES][MAX_NODES] = {0};
+    static data_t  input[MAX_NODES][MAX_FEATURES_IN] = {0};
 
-    static data_t weights1[MAX_FEATURES_HIDDEN][MAX_FEATURES_IN];
-    static acc_t bias1[MAX_FEATURES_HIDDEN];
+    static data_t  weights1[MAX_FEATURES_HIDDEN][MAX_FEATURES_IN] = {0};
+    static acc_t   bias1[MAX_FEATURES_HIDDEN] = {0};
 
-    static data_t weights2[MAX_FEATURES_OUT][MAX_FEATURES_HIDDEN];
-    static acc_t bias2[MAX_FEATURES_OUT];
+    static data_t  weights2[MAX_FEATURES_OUT][MAX_FEATURES_HIDDEN] = {0};
+    static acc_t   bias2[MAX_FEATURES_OUT] = {0};
 
-    static data_t output[MAX_NODES][MAX_FEATURES_OUT];
-    static data_t reference[MAX_NODES][MAX_FEATURES_OUT];
+    static data_t  output[MAX_NODES][MAX_FEATURES_OUT] = {0};
+    static data_t  reference[MAX_NODES][MAX_FEATURES_OUT] = {0};
 
     // Load test vectors
     std::cout << "Loading test vectors..." << std::endl;
@@ -249,19 +249,6 @@ bool test_two_layer_network() {
 
     std::cout << "Test vectors loaded successfully!" << std::endl;
 
-    // DEBUG: Print first few reference values
-    std::cout << "Reference output [0][0-6]: ";
-    for (int i = 0; i < MAX_FEATURES_OUT; i++) {
-        std::cout << (int)reference[0][i] << " ";
-    }
-    std::cout << std::endl;
-
-    std::cout << "Reference output [1][0-6]: ";
-    for (int i = 0; i < MAX_FEATURES_OUT; i++) {
-        std::cout << (int)reference[1][i] << " ";
-    }
-    std::cout << std::endl;
-
     // Load scales
     scale_t scale_in, scale_w1, scale_w2, scale_hidden, scale_out;
     std::ifstream scales_file("../../../../../test_vectors/scales.txt");
@@ -269,6 +256,7 @@ bool test_two_layer_network() {
         std::cerr << "Error: Cannot open scales.txt" << std::endl;
         return false;
     }
+
     std::string label;
     scales_file >> label >> scale_in;
     scales_file >> label >> scale_w1;
@@ -278,14 +266,38 @@ bool test_two_layer_network() {
     scales_file.close();
 
     std::cout << "Loaded scales:" << std::endl;
-    std::cout << "  scale_in: " << scale_in << std::endl;
-    std::cout << "  scale_w1: " << scale_w1 << std::endl;
-    std::cout << "  scale_w2: " << scale_w2 << std::endl;
+    std::cout << "  scale_in    : " << scale_in << std::endl;
+    std::cout << "  scale_w1    : " << scale_w1 << std::endl;
+    std::cout << "  scale_w2    : " << scale_w2 << std::endl;
     std::cout << "  scale_hidden: " << scale_hidden << std::endl;
-    std::cout << "  scale_out: " << scale_out << std::endl;
+    std::cout << "  scale_out   : " << scale_out << std::endl;
+
+    // Print sample input data
+    std::cout << "\n" << std::string(70, '-') << std::endl;
+    std::cout << "INPUT DATA SAMPLES" << std::endl;
+    std::cout << std::string(70, '-') << std::endl;
+    std::cout << "Input [0,:5]: ";
+    for (int i = 0; i < 5; i++) {
+        std::cout << (int)input[0][i] << " ";
+    }
+    std::cout << std::endl;
+    
+    std::cout << "Weights1 [0,:5]: ";
+    for (int i = 0; i < 5; i++) {
+        std::cout << (int)weights1[0][i] << " ";
+    }
+    std::cout << std::endl;
+    
+    std::cout << "Bias1 [0:5]: ";
+    for (int i = 0; i < 5; i++) {
+        std::cout << bias1[i] << " ";
+    }
+    std::cout << std::endl;
 
     // Run HLS function
+    std::cout << "\n" << std::string(70, '-') << std::endl;
     std::cout << "Running HLS implementation..." << std::endl;
+    std::cout << std::string(70, '-') << std::endl;
 
     graphsage_network(
         adj_matrix, input,
@@ -296,24 +308,41 @@ bool test_two_layer_network() {
     );
 
     std::cout << "HLS execution complete!" << std::endl;
-
-    // DEBUG: Print HLS output
-    std::cout << "HLS output [0][0-6]: ";
+    
+    // Print sample output data
+    std::cout << "\n" << std::string(70, '-') << std::endl;
+    std::cout << "OUTPUT DATA SAMPLES" << std::endl;
+    std::cout << std::string(70, '-') << std::endl;
+    std::cout << "HLS output [0,:]: ";
     for (int i = 0; i < MAX_FEATURES_OUT; i++) {
         std::cout << (int)output[0][i] << " ";
     }
     std::cout << std::endl;
-
-    std::cout << "HLS output [1][0-6]: ";
+    
+    std::cout << "Reference  [0,:]: ";
+    for (int i = 0; i < MAX_FEATURES_OUT; i++) {
+        std::cout << (int)reference[0][i] << " ";
+    }
+    std::cout << std::endl;
+    
+    std::cout << "HLS output [1,:]: ";
     for (int i = 0; i < MAX_FEATURES_OUT; i++) {
         std::cout << (int)output[1][i] << " ";
+    }
+    std::cout << std::endl;
+    
+    std::cout << "Reference  [1,:]: ";
+    for (int i = 0; i < MAX_FEATURES_OUT; i++) {
+        std::cout << (int)reference[1][i] << " ";
     }
     std::cout << std::endl;
 
     // Compare results
     std::cout << "\nComparing results with reference..." << std::endl;
-    bool passed = compare_matrices((data_t*)output, (data_t*)reference,
-                                   num_nodes, MAX_FEATURES_OUT, 3);
+    bool passed = compare_matrices(
+        (data_t*)output, (data_t*)reference,
+        num_nodes, MAX_FEATURES_OUT, 3
+    );
 
     if (passed) {
         std::cout << "\n[PASS] Two-layer network test passed!" << std::endl;
@@ -323,6 +352,7 @@ bool test_two_layer_network() {
 
     return passed;
 }
+
 
 // ============================================================================
 // Main

@@ -82,14 +82,23 @@ def main():
         if not success:
             print("\n[WARNING] Pruning failed, but continuing...")
 
-    # Step 4: Quantize model
+    # Step 4: Quantize model (both versions)
     if run_all or 'quant' in steps_to_run:
+        # Quantize HLS-compatible model (no root_weight)
         success = run_command(
             "cd src && python3 quantization.py",
-            "Quantizing Model to INT8"
+            "Quantizing Model to INT8 (HLS-compatible, no root_weight)"
         )
         if not success:
             return 1
+        
+        # Quantize standard model (with root_weight)
+        success = run_command(
+            "cd src && python3 quantization.py --use-root-weight",
+            "Quantizing Model to INT8 (with root_weight)"
+        )
+        if not success:
+            print("\n[WARNING] Quantization with root_weight failed, but continuing...")
 
     # Step 5: Generate test vectors
     if run_all or 'vectors' in steps_to_run:

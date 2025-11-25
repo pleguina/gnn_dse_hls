@@ -1,0 +1,167 @@
+Building the Correct Adjacency Matrix for HLS SAGEConv
+======================================================
+
+Goal
+----
+
+To make your FPGA/HLS implementation of GraphSAGE (SAGEConv) match
+PyTorch Geometric (PyG) exactly, you MUST generate a dense adjacency
+matrix in Python and pass it as an input (`adj_matrix`) to the HLS core.
+
+This TXT describes:
+
+1. What PyG SAGEConv does internally.
+2. How your HLS core interprets `adj_matrix`.
+3. The exact procedure to generate a correct dense adjacency matrix.
+4. Code you must run in Python before exporting data to HLS.
+5. Final checklist.
+
+----------------------------------------------------------------------
+1. PyG SAGEConv: How aggregation REALLY works
+----------------------------------------------------------------------
+
+For SAGEConv configured as:
+
+    aggr="mean"
+    root_weight=False
+    project=False
+    normalize=False
+
+PyG computes, for each node i:
+
+    h_agg[i] = mean( x[i], x[j1], x[j2], ..., x[j_deg(i)] )
+
+IMPORTANT:
+- PyG *always includes self-loops* inside the aggregator.
+- The mean is taken over (deg(i) + 1) elements:
+      the node itself + its neighbors.
+
+Mathematically:
+
+    h_agg[i] = 1 / (deg(i) + 1) * ( x[i] + Σ_{j in N(i)} x[j] )
+
+This is EXACT and MUST be reproduced inside your HLS core.
+
+
+----------------------------------------------------------------------
+2. What your HLS core expects as adj_matrix
+----------------------------------------------------------------------
+
+Your HLS `aggregate()` function does:
+
+    agg[i,f] = Σ_j adj_matrix[i][j] * x[j,f]
+
+Therefore, to match PyG:
+
+adj_matrix[i][j] must be:
+
+    adj_matrix[i][j] = 1 / (deg(i)+1)    if (j == i OR j is neighbor of i)
+    adj_matrix[i][j] = 0                 otherwise
+
+This ensures:
+
+    agg[i,f] = mean( x_i[f], x_j[f] for j in neighbors(i) )
+
+
+----------------------------------------------------------------------
+3. How to generate adj_matrix in Python
+----------------------------------------------------------------------
+
+In Python (before exporting to HLS):
+
+    import torch
+
+    def build_dense_adj_with_self_loops(edge_index, num_nodes):
+        row, col = edge_index
+        adj = torch.zeros((num_nodes, num_nodes), dtype=torch.float32)
+
+        # Add edges i <- j
+        adj[row, col] = 1.0
+
+        # OPTIONAL: If graph is undirected and edge_index lacks reverse edges:
+        # adj[col, row] = 1.0
+
+        # Add self-loops
+        idx = torch.arange(num_nodes)
+        adj[idx, idx] = 1.0
+
+        # Mean aggregator: row-normalize
+        deg = adj.sum(dim=1, keepdim=True)
+        adj = adj / deg
+
+        return adj
+
+This produces a matrix such that:
+
+- row i contains non-zero entries for self-loop and neighbors,
+- each row sums to 1.0,
+- using this matrix in HLS reproduces PyG aggregation exactly.
+
+
+----------------------------------------------------------------------
+4. Exporting adj_matrix to text for HLS
+----------------------------------------------------------------------
+
+A simple function:
+
+    def save_adj_for_hls(adj, path):
+        with open(path, "w") as f:
+            N = adj.size(0)
+            for i in range(N):
+                row_vals = [f"{adj[i,j].item():.8f}" for j in range(N)]
+                f.write(" ".join(row_vals) + "\n")
+
+This produces a plain-text matrix:
+
+    a11 a12 a13 ... a1N
+    a21 a22 a23 ... a2N
+    ...
+    aN1 aN2 aN3 ... aNN
+
+You then load this matrix into the HLS BRAM / testbench before calling
+`graphsage_network()`.
+
+
+----------------------------------------------------------------------
+5. How HLS uses adj_matrix
+----------------------------------------------------------------------
+
+Inside `aggregate()`:
+
+    float feat_val = dequantize(features[j][f], scale_in)
+    sum += adj_matrix[i][j] * feat_val
+
+Because adj_matrix rows sum to 1, HLS computes:
+
+    agg[i,f] = mean(x_i[f], x_j[f], ...)
+
+exactly like PyG.
+
+
+----------------------------------------------------------------------
+6. Complete required steps before entering HLS
+----------------------------------------------------------------------
+
+1. Take your graph `edge_index` from PyG.
+
+2. Compute the number of nodes: `num_nodes`.
+
+3. Generate dense, row-normalized adjacency with self-loops:
+
+       adj = build_dense_adj_with_self_loops(edge_index, num_nodes)
+
+4. Save `adj` to a `.txt` file (or directly to `.h` arrays) using
+   `save_adj_for_hls()`.
+
+5. Provide this as the `adj_matrix` input to the HLS core.
+
+6. Set `num_nodes` accordingly when invoking `graphsage_network()`.
+
+7. Ensure the rest of the quantization pipeline (weights, biases, scales)
+   matches the model trained in PyG.
+
+
+
+----------------------------------------------------------------------
+END OF DOCUMENT
+----------------------------------------------------------------------

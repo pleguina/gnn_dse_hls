@@ -153,11 +153,24 @@ def train_base_model(epochs=200, lr=0.01, hidden_channels=64, dropout=0.5):
 
 
 def train_reduced_model(epochs=200, lr=0.01, in_channels_reduced=16,
-                       hidden_channels=24, dropout=0.5):
-    """Train reduced GraphSAGE model for FPGA implementation."""
+                       hidden_channels=24, dropout=0.5, root_weight=True):
+    """
+    Train reduced GraphSAGE model for FPGA implementation.
+    
+    Args:
+        root_weight: If True, uses W_l * h_agg + b_l + W_r * x_i (default PyG)
+                     If False, uses W_l * h_agg + b_l (HLS-compatible, simpler)
+    """
+    suffix = "" if root_weight else "_no_root"
     print("\n" + "="*60)
-    print("Training Reduced GraphSAGE Model (FPGA-friendly)")
+    print(f"Training Reduced GraphSAGE Model (FPGA-friendly{suffix})")
     print("="*60)
+    if not root_weight:
+        print("NOTE: Using root_weight=False for HLS compatibility")
+        print("      Formula: out = W_l * h_agg + b_l")
+    else:
+        print("NOTE: Using root_weight=True (default PyG behavior)")
+        print("      Formula: out = W_l * h_agg + b_l + W_r * x_i")
 
     # Load dataset
     dataset, data = load_cora_dataset()
@@ -169,7 +182,8 @@ def train_reduced_model(epochs=200, lr=0.01, in_channels_reduced=16,
         hidden_channels=hidden_channels,
         out_channels=dataset.num_classes,
         dropout=dropout,
-        use_projection=True
+        use_projection=True,
+        root_weight=root_weight
     )
 
     print(f'\nModel architecture:\n{model}')
@@ -200,19 +214,22 @@ def train_reduced_model(epochs=200, lr=0.01, in_channels_reduced=16,
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             # Save best model
+            model_path = f'../build/models/reduced_graphsage{suffix}_best.pth'
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_acc': val_acc,
-            }, '../build/models/reduced_graphsage_best.pth')
+                'root_weight': root_weight,
+            }, model_path)
 
         if epoch % 10 == 0:
             print(f'Epoch: {epoch:03d}, Loss: {loss:.4f}, '
                   f'Train: {train_acc:.4f}, Val: {val_acc:.4f}, Test: {test_acc:.4f}')
 
     # Load best model and evaluate
-    checkpoint = torch.load('../build/models/reduced_graphsage_best.pth')
+    model_path = f'../build/models/reduced_graphsage{suffix}_best.pth'
+    checkpoint = torch.load(model_path)
     model.load_state_dict(checkpoint['model_state_dict'])
     train_acc, val_acc, test_acc = test(model, data)
 
@@ -220,11 +237,13 @@ def train_reduced_model(epochs=200, lr=0.01, in_channels_reduced=16,
     print(f'Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}, Test Acc: {test_acc:.4f}')
 
     # Save training history
-    with open('../build/reduced_model_history.json', 'w') as f:
+    history_path = f'../build/reduced_model{suffix}_history.json'
+    with open(history_path, 'w') as f:
         json.dump(history, f, indent=2)
 
     # Plot training curves
-    plot_training_curves(history, save_path='../build/plots/reduced_model_training.png')
+    plot_path = f'../build/plots/reduced_model{suffix}_training.png'
+    plot_training_curves(history, save_path=plot_path)
 
     return model, data, history
 
@@ -233,15 +252,27 @@ if __name__ == '__main__':
     # Train base model
     base_model, data, base_history = train_base_model(epochs=200)
 
-    # Train reduced model for FPGA
-    reduced_model, data, reduced_history = train_reduced_model(epochs=200)
+    # Train reduced model WITH root_weight (default PyG behavior)
+    print("\n" + "="*60)
+    print("Training Model WITH root_weight=True")
+    print("="*60)
+    reduced_model, data, reduced_history = train_reduced_model(epochs=200, root_weight=True)
+
+    # Train reduced model WITHOUT root_weight (HLS-compatible)
+    print("\n" + "="*60)
+    print("Training Model WITHOUT root_weight (HLS-compatible)")
+    print("="*60)
+    reduced_model_no_root, data, reduced_history_no_root = train_reduced_model(epochs=200, root_weight=False)
 
     print("\n" + "="*60)
     print("Training Complete!")
     print("="*60)
     print("Saved models:")
-    print("  - ../models/base_graphsage_best.pth")
-    print("  - ../models/reduced_graphsage_best.pth")
+    print("  - ../build/models/base_graphsage_best.pth")
+    print("  - ../build/models/reduced_graphsage_best.pth (with root_weight)")
+    print("  - ../build/models/reduced_graphsage_no_root_best.pth (HLS-compatible)")
     print("\nTraining plots:")
-    print("  - ../outputs/plots/base_model_training.png")
-    print("  - ../outputs/plots/reduced_model_training.png")
+    print("  - ../build/plots/base_model_training.png")
+    print("  - ../build/plots/reduced_model_training.png")
+    print("  - ../build/plots/reduced_model_no_root_training.png")
+    print("\nFor HLS implementation, use the '_no_root' model!")
