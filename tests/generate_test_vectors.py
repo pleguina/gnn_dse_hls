@@ -215,8 +215,10 @@ if __name__ == '__main__':
     data = dataset[0]
 
     # Extract subgraph with fixed center node for reproducibility
+    # NOTE: QAT also uses the SAME parameters (center_node=0, num_hops=2, num_nodes=8)
+    # for fair comparison between PTQ and QAT models
     print("Extracting subgraph...")
-    subgraph_data = extract_fixed_subgraph(data, num_nodes=32, center_node=0, num_hops=2)
+    subgraph_data = extract_fixed_subgraph(data, num_nodes=8, center_node=0, num_hops=2)
 
     # Load trained reduced model
     print("Loading trained model...")

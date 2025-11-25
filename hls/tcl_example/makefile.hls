@@ -1,0 +1,421 @@
+.PHONY: all help clean
+
+# Configuration
+VITIS_HLS ?= vitis_hls
+PYTHON ?= python3
+BUILD_DIR ?= build
+BUILD_HLS_DIR ?= build_hls
+TEMPLATE_DIR ?= verification/templates
+TOOLS_DIR ?= verification/tools
+LOG_DIR ?= logs/hls
+SHELL := /bin/bash
+PARALLEL_SCRIPT ?= scripts/parallel_hls.sh
+PARALLEL_JOBS ?= 4
+
+# Available modules
+MODULES = dt_interface csc_interface concentrator layermem region_filter priority_arbiter phi_extrapolation phi_dist_processor pdf_lookup best_candidate pdf_lookup_best_candidate phidist_pdf_best doublebuff nn_interface regression_nn
+
+# Colors
+GREEN = \033[0;32m
+YELLOW = \033[0;33m
+RED = \033[0;31m
+NC = \033[0m  # No Color
+
+ECHO = /bin/echo -e
+
+# -----------------------------------------------------------------------------
+# Help
+# -----------------------------------------------------------------------------
+
+help:
+	@echo "$(GREEN)OMTF Vitis HLS Verification Makefile$(NC)"
+	@echo ""
+	@echo "$(YELLOW)Setup:$(NC)"
+	@echo "  make -f Makefile.hls hls_setup              Generate TCL scripts for all modules"
+	@echo "  make -f Makefile.hls hls_setup_<module>     Generate TCL for specific module"
+	@echo ""
+	@echo "$(YELLOW)Per-Module Workflows:$(NC)"
+	@echo "  make -f Makefile.hls hls_csim_<module>      Run C simulation"
+	@echo "  make -f Makefile.hls hls_synth_<module>     Run synthesis"
+	@echo "  make -f Makefile.hls hls_cosim_<module>     Run RTL co-simulation"
+	@echo "  make -f Makefile.hls hls_export_<module>    Export IP package"
+	@echo "  make -f Makefile.hls hls_all_<module>       Run complete flow (csim → synth → cosim)"
+	@echo ""
+	@echo "$(YELLOW)Batch Operations:$(NC)"
+	@echo "  make -f Makefile.hls hls_csim_all           Run C simulation for all modules"
+	@echo "  make -f Makefile.hls hls_synth_all          Run synthesis for all modules"
+	@echo "  make -f Makefile.hls hls_cosim_all          Run co-simulation for all modules"
+	@echo "  make -f Makefile.hls hls_export_all         Export IP packages for all modules"
+	@echo ""
+	@echo "$(YELLOW)Parallel Operations (Fast):$(NC)"
+	@echo "  make -f Makefile.hls hls_parallel_synth PARALLEL_JOBS=4 MODULES=\"dt_interface csc_interface\""
+	@echo "  make -f Makefile.hls hls_parallel_export PARALLEL_JOBS=2 MODULES=\"all\""
+	@echo ""
+	@echo "$(YELLOW)Available modules:$(NC) $(MODULES)"
+
+# -----------------------------------------------------------------------------
+# Setup - Generate TCL scripts
+# -----------------------------------------------------------------------------
+
+hls_setup:
+	@$(ECHO) "$(GREEN)▶ Generating HLS TCL scripts for all modules...$(NC)"
+	@$(PYTHON) $(TOOLS_DIR)/generate_hls_tcl.py all \
+		--template-dir $(TEMPLATE_DIR) \
+		--output-dir $(BUILD_HLS_DIR)
+	@$(ECHO) "$(GREEN)✅ TCL generation complete$(NC)"
+
+hls_setup_%:
+	@$(ECHO) "$(GREEN)▶ Generating HLS TCL scripts for $*...$(NC)"
+	@$(PYTHON) $(TOOLS_DIR)/generate_hls_tcl.py $* \
+		--template-dir $(TEMPLATE_DIR) \
+		--output-dir $(BUILD_HLS_DIR)
+	@$(ECHO) "$(GREEN)✅ TCL generation complete for $*$(NC)"
+
+# -----------------------------------------------------------------------------
+# DT Interface
+# -----------------------------------------------------------------------------
+
+hls_csim_dt: hls_setup_dt_interface $(BUILD_DIR)/tb_dt_interface
+	@$(ECHO) "$(GREEN)▶ Running C simulation for dt_interface...$(NC)"
+	@mkdir -p $(BUILD_HLS_DIR)/dt_interface/logs
+	cd $(BUILD_HLS_DIR)/dt_interface && $(VITIS_HLS) -f project.tcl 2>&1 | tee logs/project.log
+	cd $(BUILD_HLS_DIR)/dt_interface && $(VITIS_HLS) -f csim.tcl    2>&1 | tee logs/csim.log
+	@$(ECHO) "$(GREEN)✅ C simulation complete - check $(BUILD_HLS_DIR)/dt_interface/logs/csim.log$(NC)"
+
+hls_synth_dt: hls_setup_dt_interface
+	@$(ECHO) "$(GREEN)▶ Running synthesis for dt_interface...$(NC)"
+	@mkdir -p $(BUILD_HLS_DIR)/dt_interface/logs
+	cd $(BUILD_HLS_DIR)/dt_interface && $(VITIS_HLS) -f project.tcl 2>&1 | tee logs/project.log
+	cd $(BUILD_HLS_DIR)/dt_interface && $(VITIS_HLS) -f synth.tcl    2>&1 | tee logs/synth.log
+	@$(ECHO) "$(GREEN)✅ Synthesis complete - check $(BUILD_HLS_DIR)/dt_interface/logs/synth.log$(NC)"
+
+hls_export_dt: $(BUILD_HLS_DIR)/dt_interface/solution1/syn/report/dt_omtf_interface_csynth.rpt
+	@$(ECHO) "$(GREEN)▶ Exporting IP for dt_interface...$(NC)"
+	@mkdir -p $(BUILD_HLS_DIR)/dt_interface/logs
+	cd $(BUILD_HLS_DIR)/dt_interface && $(VITIS_HLS) -f ip_export.tcl 2>&1 | tee logs/ip_export.log
+	@$(ECHO) "$(GREEN)✅ IP export complete - check $(BUILD_HLS_DIR)/dt_interface/logs/ip_export.log$(NC)"
+
+$(BUILD_HLS_DIR)/dt_interface/solution1/syn/report/dt_omtf_interface_csynth.rpt:
+	@$(ECHO) "$(YELLOW)⚠️  Synthesis report not found, running synthesis first...$(NC)"
+	@$(MAKE) -f Makefile.hls hls_synth_dt
+
+hls_cosim_dt: $(BUILD_HLS_DIR)/dt_interface/solution1/syn/report/dt_omtf_interface_csynth.rpt $(BUILD_DIR)/tb_dt_interface
+	@$(ECHO) "$(GREEN)▶ Running RTL co-simulation for dt_interface...$(NC)"
+	@mkdir -p $(BUILD_HLS_DIR)/dt_interface/logs
+	cd $(BUILD_HLS_DIR)/dt_interface && $(VITIS_HLS) -f cosim.tcl 2>&1 | tee logs/cosim.log
+	@$(ECHO) "$(GREEN)✅ Co-simulation complete - check $(BUILD_HLS_DIR)/dt_interface/logs/cosim.log$(NC)"
+
+hls_all_dt: hls_csim_dt hls_synth_dt hls_cosim_dt
+	@$(ECHO) "$(GREEN)✅ Complete HLS flow finished for dt_interface$(NC)"
+
+hls_clean_dt:
+	@$(ECHO) "$(YELLOW)▶ Cleaning dt_interface HLS artifacts...$(NC)"
+	rm -rf $(BUILD_HLS_DIR)/dt_interface
+	@$(ECHO) "$(GREEN)✅ Cleaned$(NC)"
+
+# -----------------------------------------------------------------------------
+# CSC Interface
+# -----------------------------------------------------------------------------
+
+hls_csim_csc: hls_setup_csc_interface $(BUILD_DIR)/tb_csc_interface
+	@$(ECHO) "$(GREEN)▶ Running C simulation for csc_interface...$(NC)"
+	@mkdir -p $(BUILD_HLS_DIR)/csc_interface/logs
+	cd $(BUILD_HLS_DIR)/csc_interface && $(VITIS_HLS) -f project.tcl 2>&1 | tee logs/project.log
+	cd $(BUILD_HLS_DIR)/csc_interface && $(VITIS_HLS) -f csim.tcl    2>&1 | tee logs/csim.log
+	@$(ECHO) "$(GREEN)✅ C simulation complete - check $(BUILD_HLS_DIR)/csc_interface/logs/csim.log$(NC)"
+
+hls_synth_csc: hls_setup_csc_interface
+	@$(ECHO) "$(GREEN)▶ Running synthesis for csc_interface...$(NC)"
+	@mkdir -p $(BUILD_HLS_DIR)/csc_interface/logs
+	cd $(BUILD_HLS_DIR)/csc_interface && $(VITIS_HLS) -f project.tcl 2>&1 | tee logs/project.log
+	cd $(BUILD_HLS_DIR)/csc_interface && $(VITIS_HLS) -f synth.tcl    2>&1 | tee logs/synth.log
+	@$(ECHO) "$(GREEN)✅ Synthesis complete - check $(BUILD_HLS_DIR)/csc_interface/logs/synth.log$(NC)"
+
+hls_export_csc: $(BUILD_HLS_DIR)/csc_interface/solution1/syn/report/csc_omtf_interface_csynth.rpt
+	@$(ECHO) "$(GREEN)▶ Exporting IP for csc_interface...$(NC)"
+	@mkdir -p $(BUILD_HLS_DIR)/csc_interface/logs
+	cd $(BUILD_HLS_DIR)/csc_interface && $(VITIS_HLS) -f ip_export.tcl 2>&1 | tee logs/ip_export.log
+	@$(ECHO) "$(GREEN)✅ IP export complete - check $(BUILD_HLS_DIR)/csc_interface/logs/ip_export.log$(NC)"
+
+$(BUILD_HLS_DIR)/csc_interface/solution1/syn/report/csc_omtf_interface_csynth.rpt:
+	@$(ECHO) "$(YELLOW)⚠️  Synthesis report not found, running synthesis first...$(NC)"
+	@$(MAKE) -f Makefile.hls hls_synth_csc
+
+hls_cosim_csc: $(BUILD_HLS_DIR)/csc_interface/solution1/syn/report/csc_omtf_interface_csynth.rpt $(BUILD_DIR)/tb_csc_interface
+	@$(ECHO) "$(GREEN)▶ Running RTL co-simulation for csc_interface...$(NC)"
+	@mkdir -p $(BUILD_HLS_DIR)/csc_interface/logs
+	cd $(BUILD_HLS_DIR)/csc_interface && $(VITIS_HLS) -f cosim.tcl 2>&1 | tee logs/cosim.log
+	@$(ECHO) "$(GREEN)✅ Co-simulation complete - check $(BUILD_HLS_DIR)/csc_interface/logs/cosim.log$(NC)"
+
+hls_all_csc: hls_csim_csc hls_synth_csc hls_cosim_csc
+	@$(ECHO) "$(GREEN)✅ Complete HLS flow finished for csc_interface$(NC)"
+
+hls_clean_csc:
+	@$(ECHO) "$(YELLOW)▶ Cleaning csc_interface HLS artifacts...$(NC)"
+	rm -rf $(BUILD_HLS_DIR)/csc_interface
+	@$(ECHO) "$(GREEN)✅ Cleaned$(NC)"
+
+# -----------------------------------------------------------------------------
+# (and so on for concentrator, layermem, region_filter, priority_arbiter,
+# phi_extrapolation, phi_dist_processor, pdf_lookup, best_candidate, doublebuff)
+#
+# NOTE: in each hls_export_<module>:
+#   - keep the dependency on the *_csynth.rpt
+#   - REMOVE the `mkdir -p ip_packages` line
+#   - keep the pattern:
+#
+#       cd $(BUILD_HLS_DIR)/<module> && $(VITIS_HLS) -f ip_export.tcl ...
+#
+#   because ip_export.tcl now knows the absolute ip_packages/ path and
+#   will create it itself if needed.
+#
+# I'm not duplicating those blocks here because they are structurally the same
+# as dt_interface and csc_interface after the edits above.
+#
+# -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# NN Interface (synthesis and export only, no testing)
+# -----------------------------------------------------------------------------
+
+hls_synth_nn_interface: hls_setup_nn_interface
+	@$(ECHO) "$(GREEN)▶ Running synthesis for nn_interface...$(NC)"
+	@mkdir -p $(BUILD_HLS_DIR)/nn_interface/logs
+	cd $(BUILD_HLS_DIR)/nn_interface && $(VITIS_HLS) -f project.tcl 2>&1 | tee logs/project.log
+	cd $(BUILD_HLS_DIR)/nn_interface && $(VITIS_HLS) -f synth.tcl    2>&1 | tee logs/synth.log
+	@$(ECHO) "$(GREEN)✅ Synthesis complete - check $(BUILD_HLS_DIR)/nn_interface/logs/synth.log$(NC)"
+
+hls_export_nn_interface: $(BUILD_HLS_DIR)/nn_interface/solution1/syn/report/NNInterface_csynth.rpt
+	@$(ECHO) "$(GREEN)▶ Exporting IP for nn_interface...$(NC)"
+	@mkdir -p $(BUILD_HLS_DIR)/nn_interface/logs
+	cd $(BUILD_HLS_DIR)/nn_interface && $(VITIS_HLS) -f ip_export.tcl 2>&1 | tee logs/ip_export.log
+	@$(ECHO) "$(GREEN)✅ IP export complete - check $(BUILD_HLS_DIR)/nn_interface/logs/ip_export.log$(NC)"
+
+$(BUILD_HLS_DIR)/nn_interface/solution1/syn/report/NNInterface_csynth.rpt:
+	@$(ECHO) "$(YELLOW)⚠️  Synthesis report not found, running synthesis first...$(NC)"
+	@$(MAKE) -f Makefile.hls hls_synth_nn_interface
+
+hls_clean_nn_interface:
+	@$(ECHO) "$(YELLOW)▶ Cleaning nn_interface HLS artifacts...$(NC)"
+	rm -rf $(BUILD_HLS_DIR)/nn_interface
+	@$(ECHO) "$(GREEN)✅ Cleaned$(NC)"
+
+# -----------------------------------------------------------------------------
+# Regression NN (synthesis and export only, no testing)
+# -----------------------------------------------------------------------------
+
+hls_synth_regression_nn: hls_setup_regression_nn
+	@$(ECHO) "$(GREEN)▶ Running synthesis for regression_nn...$(NC)"
+	@mkdir -p $(BUILD_HLS_DIR)/regression_nn/logs
+	cd $(BUILD_HLS_DIR)/regression_nn && $(VITIS_HLS) -f project.tcl 2>&1 | tee logs/project.log
+	cd $(BUILD_HLS_DIR)/regression_nn && $(VITIS_HLS) -f synth.tcl    2>&1 | tee logs/synth.log
+	@$(ECHO) "$(GREEN)✅ Synthesis complete - check $(BUILD_HLS_DIR)/regression_nn/logs/synth.log$(NC)"
+
+hls_export_regression_nn: $(BUILD_HLS_DIR)/regression_nn/solution1/syn/report/Regression_NN_csynth.rpt
+	@$(ECHO) "$(GREEN)▶ Exporting IP for regression_nn...$(NC)"
+	@mkdir -p $(BUILD_HLS_DIR)/regression_nn/logs
+	cd $(BUILD_HLS_DIR)/regression_nn && $(VITIS_HLS) -f ip_export.tcl 2>&1 | tee logs/ip_export.log
+	@$(ECHO) "$(GREEN)✅ IP export complete - check $(BUILD_HLS_DIR)/regression_nn/logs/ip_export.log$(NC)"
+
+$(BUILD_HLS_DIR)/regression_nn/solution1/syn/report/Regression_NN_csynth.rpt:
+	@$(ECHO) "$(YELLOW)⚠️  Synthesis report not found, running synthesis first...$(NC)"
+	@$(MAKE) -f Makefile.hls hls_synth_regression_nn
+
+hls_clean_regression_nn:
+	@$(ECHO) "$(YELLOW)▶ Cleaning regression_nn HLS artifacts...$(NC)"
+	rm -rf $(BUILD_HLS_DIR)/regression_nn
+	@$(ECHO) "$(GREEN)✅ Cleaned$(NC)"
+
+# -----------------------------------------------------------------------------
+# PDF Lookup + Best Candidate Combined Module
+# -----------------------------------------------------------------------------
+
+hls_csim_pdf_lookup_best_candidate: hls_setup_pdf_lookup_best_candidate $(BUILD_DIR)/tb_pdf_lookup_best_candidate
+	@$(ECHO) "$(GREEN)▶ Running C simulation for pdf_lookup_best_candidate...$(NC)"
+	@mkdir -p $(BUILD_HLS_DIR)/pdf_lookup_best_candidate/logs
+	cd $(BUILD_HLS_DIR)/pdf_lookup_best_candidate && $(VITIS_HLS) -f project.tcl 2>&1 | tee logs/project.log
+	cd $(BUILD_HLS_DIR)/pdf_lookup_best_candidate && $(VITIS_HLS) -f csim.tcl    2>&1 | tee logs/csim.log
+	@$(ECHO) "$(GREEN)✅ C simulation complete - check $(BUILD_HLS_DIR)/pdf_lookup_best_candidate/logs/csim.log$(NC)"
+
+hls_synth_pdf_lookup_best_candidate: hls_setup_pdf_lookup_best_candidate
+	@$(ECHO) "$(GREEN)▶ Running synthesis for pdf_lookup_best_candidate...$(NC)"
+	@mkdir -p $(BUILD_HLS_DIR)/pdf_lookup_best_candidate/logs
+	cd $(BUILD_HLS_DIR)/pdf_lookup_best_candidate && $(VITIS_HLS) -f project.tcl 2>&1 | tee logs/project.log
+	cd $(BUILD_HLS_DIR)/pdf_lookup_best_candidate && $(VITIS_HLS) -f synth.tcl    2>&1 | tee logs/synth.log
+	@$(ECHO) "$(GREEN)✅ Synthesis complete - check $(BUILD_HLS_DIR)/pdf_lookup_best_candidate/logs/synth.log$(NC)"
+
+hls_export_pdf_lookup_best_candidate: $(BUILD_HLS_DIR)/pdf_lookup_best_candidate/solution1/syn/report/pdf_lookup_best_candidate_csynth.rpt
+	@$(ECHO) "$(GREEN)▶ Exporting IP for pdf_lookup_best_candidate...$(NC)"
+	@mkdir -p $(BUILD_HLS_DIR)/pdf_lookup_best_candidate/logs
+	cd $(BUILD_HLS_DIR)/pdf_lookup_best_candidate && $(VITIS_HLS) -f ip_export.tcl 2>&1 | tee logs/ip_export.log
+	@$(ECHO) "$(GREEN)✅ IP export complete - check $(BUILD_HLS_DIR)/pdf_lookup_best_candidate/logs/ip_export.log$(NC)"
+
+$(BUILD_HLS_DIR)/pdf_lookup_best_candidate/solution1/syn/report/pdf_lookup_best_candidate_csynth.rpt:
+	@$(ECHO) "$(YELLOW)⚠️  Synthesis report not found, running synthesis first...$(NC)"
+	@$(MAKE) -f Makefile.hls hls_synth_pdf_lookup_best_candidate
+
+hls_cosim_pdf_lookup_best_candidate: $(BUILD_HLS_DIR)/pdf_lookup_best_candidate/solution1/syn/report/pdf_lookup_best_candidate_csynth.rpt $(BUILD_DIR)/tb_pdf_lookup_best_candidate
+	@$(ECHO) "$(GREEN)▶ Running RTL co-simulation for pdf_lookup_best_candidate...$(NC)"
+	@mkdir -p $(BUILD_HLS_DIR)/pdf_lookup_best_candidate/logs
+	cd $(BUILD_HLS_DIR)/pdf_lookup_best_candidate && $(VITIS_HLS) -f cosim.tcl 2>&1 | tee logs/cosim.log
+	@$(ECHO) "$(GREEN)✅ Co-simulation complete - check $(BUILD_HLS_DIR)/pdf_lookup_best_candidate/logs/cosim.log$(NC)"
+
+hls_all_pdf_lookup_best_candidate: hls_csim_pdf_lookup_best_candidate hls_synth_pdf_lookup_best_candidate hls_cosim_pdf_lookup_best_candidate
+	@$(ECHO) "$(GREEN)✅ Complete HLS flow finished for pdf_lookup_best_candidate$(NC)"
+
+hls_clean_pdf_lookup_best_candidate:
+	@$(ECHO) "$(YELLOW)▶ Cleaning pdf_lookup_best_candidate HLS artifacts...$(NC)"
+	rm -rf $(BUILD_HLS_DIR)/pdf_lookup_best_candidate
+	@$(ECHO) "$(GREEN)✅ Cleaned$(NC)"
+
+# -----------------------------------------------------------------------------
+# PhiDist + PDF + Best Candidate Combined Module (synthesis and export only)
+# -----------------------------------------------------------------------------
+
+hls_synth_phidist_pdf_best: hls_setup_phidist_pdf_best
+	@$(ECHO) "$(GREEN)▶ Running synthesis for phidist_pdf_best...$(NC)"
+	@mkdir -p $(BUILD_HLS_DIR)/phidist_pdf_best/logs
+	cd $(BUILD_HLS_DIR)/phidist_pdf_best && $(VITIS_HLS) -f project.tcl 2>&1 | tee logs/project.log
+	cd $(BUILD_HLS_DIR)/phidist_pdf_best && $(VITIS_HLS) -f synth.tcl    2>&1 | tee logs/synth.log
+	@$(ECHO) "$(GREEN)✅ Synthesis complete - check $(BUILD_HLS_DIR)/phidist_pdf_best/logs/synth.log$(NC)"
+
+hls_export_phidist_pdf_best: $(BUILD_HLS_DIR)/phidist_pdf_best/solution1/syn/report/phidist_pdf_best_csynth.rpt
+	@$(ECHO) "$(GREEN)▶ Exporting IP for phidist_pdf_best...$(NC)"
+	@mkdir -p $(BUILD_HLS_DIR)/phidist_pdf_best/logs
+	cd $(BUILD_HLS_DIR)/phidist_pdf_best && $(VITIS_HLS) -f ip_export.tcl 2>&1 | tee logs/ip_export.log
+	@$(ECHO) "$(GREEN)✅ IP export complete - check $(BUILD_HLS_DIR)/phidist_pdf_best/logs/ip_export.log$(NC)"
+
+$(BUILD_HLS_DIR)/phidist_pdf_best/solution1/syn/report/phidist_pdf_best_csynth.rpt:
+	@$(ECHO) "$(YELLOW)⚠️  Synthesis report not found, running synthesis first...$(NC)"
+	@$(MAKE) -f Makefile.hls hls_synth_phidist_pdf_best
+
+hls_clean_phidist_pdf_best:
+	@$(ECHO) "$(YELLOW)▶ Cleaning phidist_pdf_best HLS artifacts...$(NC)"
+	rm -rf $(BUILD_HLS_DIR)/phidist_pdf_best
+	@$(ECHO) "$(GREEN)✅ Cleaned$(NC)"
+
+# -----------------------------------------------------------------------------
+# Batch operations (deduped and fixed)
+# -----------------------------------------------------------------------------
+
+hls_csim_all: hls_csim_dt hls_csim_csc hls_csim_concentrator hls_csim_layermem hls_csim_region_filter hls_csim_priority_arbiter hls_csim_phi_extrapolation hls_csim_phi_dist_processor hls_csim_pdf_lookup hls_csim_best_candidate hls_csim_doublebuff
+	@echo "$(GREEN)✅ All C simulations complete$(NC)"
+
+hls_synth_all: hls_synth_dt hls_synth_csc hls_synth_concentrator hls_synth_layermem hls_synth_region_filter hls_synth_priority_arbiter hls_synth_phi_extrapolation hls_synth_phi_dist_processor hls_synth_pdf_lookup hls_synth_best_candidate hls_synth_doublebuff hls_synth_nn_interface hls_synth_regression_nn hls_synth_phidist_pdf_best
+	@echo "$(GREEN)✅ All syntheses complete$(NC)"
+
+hls_cosim_all: hls_cosim_dt hls_cosim_csc hls_cosim_concentrator hls_cosim_layermem hls_cosim_region_filter hls_cosim_priority_arbiter hls_cosim_phi_extrapolation hls_cosim_phi_dist_processor hls_cosim_pdf_lookup hls_cosim_best_candidate hls_cosim_doublebuff
+	@echo "$(GREEN)✅ All co-simulations complete$(NC)"
+
+hls_export_all: hls_export_dt hls_export_csc hls_export_concentrator hls_export_layermem hls_export_region_filter hls_export_priority_arbiter hls_export_phi_extrapolation hls_export_phi_dist_processor hls_export_pdf_lookup hls_export_best_candidate hls_export_doublebuff hls_export_nn_interface hls_export_regression_nn hls_export_phidist_pdf_best
+	@echo "$(GREEN)✅ All IP exports complete$(NC)"
+
+hls_clean:
+	@echo "$(YELLOW)▶ Cleaning all HLS build artifacts...$(NC)"
+	rm -rf $(BUILD_HLS_DIR)
+	@echo "$(GREEN)✅ All HLS artifacts cleaned$(NC)"
+
+# -----------------------------------------------------------------------------
+# Parallel Operations
+# -----------------------------------------------------------------------------
+
+MODULES ?= all
+
+hls_parallel_csim:
+	@$(ECHO) "$(GREEN)▶ Running parallel C simulation ($(PARALLEL_JOBS) jobs)...$(NC)"
+	@bash $(PARALLEL_SCRIPT) -j $(PARALLEL_JOBS) -c csim -m "$(MODULES)" -v $(VITIS_HLS)
+
+hls_parallel_synth:
+	@$(ECHO) "$(GREEN)▶ Running parallel synthesis ($(PARALLEL_JOBS) jobs)...$(NC)"
+	@bash $(PARALLEL_SCRIPT) -j $(PARALLEL_JOBS) -c synth -m "$(MODULES)" -v $(VITIS_HLS)
+
+hls_parallel_cosim:
+	@$(ECHO) "$(GREEN)▶ Running parallel co-simulation ($(PARALLEL_JOBS) jobs)...$(NC)"
+	@bash $(PARALLEL_SCRIPT) -j $(PARALLEL_JOBS) -c cosim -m "$(MODULES)" -v $(VITIS_HLS)
+
+hls_parallel_export:
+	@$(ECHO) "$(GREEN)▶ Running parallel IP export ($(PARALLEL_JOBS) jobs)...$(NC)"
+	@bash $(PARALLEL_SCRIPT) -j $(PARALLEL_JOBS) -c export -m "$(MODULES)" -v $(VITIS_HLS)
+
+# -----------------------------------------------------------------------------
+# Log Analysis
+# -----------------------------------------------------------------------------
+
+hls_summary_%:
+	@if [ -d "$(LOG_DIR)/$*" ]; then \
+		echo "$(GREEN)▶ Parsing HLS logs for $*...$(NC)"; \
+		$(PYTHON) $(TOOLS_DIR)/parse_hls_logs.py $(LOG_DIR)/$*; \
+	else \
+		echo "$(RED)❌ No logs found for $*. Run HLS flow first.$(NC)"; \
+		exit 1; \
+	fi
+
+hls_logs_%:
+	@if [ -d "$(LOG_DIR)/$*" ]; then \
+		echo "$(GREEN)▶ Opening logs directory for $*...$(NC)"; \
+		ls -lh $(LOG_DIR)/$*; \
+	else \
+		echo "$(RED)❌ No logs found for $*$(NC)"; \
+		exit 1; \
+	fi
+
+# -----------------------------------------------------------------------------
+# Testbench build deps
+# -----------------------------------------------------------------------------
+
+$(BUILD_DIR)/Makefile:
+	@echo "$(YELLOW)⚠ Build directory not configured. Running CMake...$(NC)"
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && cmake ..
+
+$(BUILD_DIR)/tb_dt_interface: $(BUILD_DIR)/Makefile
+	cd $(BUILD_DIR) && make tb_dt_interface
+
+$(BUILD_DIR)/tb_csc_interface: $(BUILD_DIR)/Makefile
+	cd $(BUILD_DIR) && make tb_csc_interface
+
+$(BUILD_DIR)/tb_layermem: $(BUILD_DIR)/Makefile
+	cd $(BUILD_DIR) && make tb_layermem
+
+$(BUILD_DIR)/tb_region_filter: $(BUILD_DIR)/Makefile
+	cd $(BUILD_DIR) && make tb_region_filter
+
+$(BUILD_DIR)/tb_phi_extrapolation: $(BUILD_DIR)/Makefile
+	cd $(BUILD_DIR) && make tb_phi_extrapolation
+
+$(BUILD_DIR)/tb_phi_dist_processor: $(BUILD_DIR)/Makefile
+	cd $(BUILD_DIR) && make tb_phi_dist_processor
+
+$(BUILD_DIR)/tb_pdf_lookup: $(BUILD_DIR)/Makefile
+	cd $(BUILD_DIR) && make tb_pdf_lookup
+
+$(BUILD_DIR)/tb_best_candidate: $(BUILD_DIR)/Makefile
+	cd $(BUILD_DIR) && make tb_best_candidate
+
+$(BUILD_DIR)/tb_pdf_lookup_best_candidate: $(BUILD_DIR)/Makefile
+	cd $(BUILD_DIR) && make tb_pdf_lookup
+
+$(BUILD_DIR)/tb_concentrator: $(BUILD_DIR)/Makefile
+	cd $(BUILD_DIR) && make tb_concentrator
+
+# (add tb_doublebuff if there's a standalone testbench for doublebuff, same style)
+
+.PHONY: hls_setup hls_setup_% \
+        hls_csim_dt hls_synth_dt hls_cosim_dt hls_export_dt hls_all_dt hls_clean_dt \
+        hls_csim_csc hls_synth_csc hls_cosim_csc hls_export_csc hls_all_csc hls_clean_csc \
+        hls_csim_concentrator hls_synth_concentrator hls_cosim_concentrator hls_export_concentrator hls_all_concentrator hls_clean_concentrator \
+        hls_csim_layermem hls_synth_layermem hls_cosim_layermem hls_export_layermem hls_all_layermem hls_clean_layermem \
+        hls_csim_region_filter hls_synth_region_filter hls_cosim_region_filter hls_export_region_filter hls_all_region_filter hls_clean_region_filter \
+        hls_csim_priority_arbiter hls_synth_priority_arbiter hls_cosim_priority_arbiter hls_export_priority_arbiter hls_all_priority_arbiter hls_clean_priority_arbiter \
+        hls_csim_phi_extrapolation hls_synth_phi_extrapolation hls_cosim_phi_extrapolation hls_export_phi_extrapolation hls_all_phi_extrapolation hls_clean_phi_extrapolation \
+        hls_csim_phi_dist_processor hls_synth_phi_dist_processor hls_cosim_phi_dist_processor hls_export_phi_dist_processor hls_all_phi_dist_processor hls_clean_phi_dist_processor \
+        hls_csim_pdf_lookup hls_synth_pdf_lookup hls_cosim_pdf_lookup hls_export_pdf_lookup hls_all_pdf_lookup hls_clean_pdf_lookup \
+        hls_csim_best_candidate hls_synth_best_candidate hls_cosim_best_candidate hls_export_best_candidate hls_all_best_candidate hls_clean_best_candidate \
+        hls_csim_pdf_lookup_best_candidate hls_synth_pdf_lookup_best_candidate hls_cosim_pdf_lookup_best_candidate hls_export_pdf_lookup_best_candidate hls_all_pdf_lookup_best_candidate hls_clean_pdf_lookup_best_candidate \
+        hls_csim_doublebuff hls_synth_doublebuff hls_cosim_doublebuff hls_export_doublebuff hls_all_doublebuff hls_clean_doublebuff \
+        hls_synth_nn_interface hls_export_nn_interface hls_clean_nn_interface \
+        hls_synth_regression_nn hls_export_regression_nn hls_clean_regression_nn \
+        hls_synth_phidist_pdf_best hls_export_phidist_pdf_best hls_clean_phidist_pdf_best \
+        hls_csim_all hls_synth_all hls_cosim_all hls_export_all hls_clean \
+        hls_parallel_csim hls_parallel_synth hls_parallel_cosim hls_parallel_export \
+        hls_summary_% hls_logs_%

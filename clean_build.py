@@ -33,6 +33,10 @@ def get_build_structure():
             'description': 'PTQ test vectors',
             'patterns': ['*.txt', '*.json'],
         },
+        'build/test_vectors_float': {
+            'description': 'FLOAT test vectors (no quantization)',
+            'patterns': ['*.txt', '*.json'],
+        },
         'build/test_vectors_qat': {
             'description': 'QAT test vectors',
             'patterns': ['*.txt', '*.json'],

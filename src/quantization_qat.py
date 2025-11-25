@@ -16,6 +16,7 @@ torch.serialization.add_safe_globals([Data])
 
 from model_qat import ReducedGraphSAGEQAT
 from config import get_config
+from subgraph_extraction import extract_fixed_subgraph
 
 
 def extract_qat_scales(model):
@@ -146,9 +147,10 @@ def export_qat_weights(model, scales, output_dir):
         print(f"Exported layer 2 root weights: {w2_r_quantized.shape}")
 
 
-def export_qat_test_vectors(model, data, scales, output_dir, num_nodes=8):
+def export_qat_test_vectors(model, data, scales, output_dir, num_nodes=8, center_node=0, num_hops=2):
     """
     Generate test vectors from QAT model for HLS verification.
+    Uses SAME subgraph extraction as PTQ for fair comparison.
 
     Args:
         model: Trained QAT model
@@ -156,23 +158,30 @@ def export_qat_test_vectors(model, data, scales, output_dir, num_nodes=8):
         scales: Dictionary of quantization scales
         output_dir: Directory to save test vectors
         num_nodes: Number of nodes in test subgraph
+        center_node: Center node for k-hop extraction (default: 0)
+        num_hops: Number of hops for neighborhood (default: 2)
     """
     os.makedirs(output_dir, exist_ok=True)
 
     model.eval()
     model.enable_fake_quant()
 
-    # Extract a fixed subgraph (same as PTQ for comparison)
-    node_indices = torch.arange(num_nodes)
+    # Extract the SAME subgraph as PTQ (for fair comparison)
+    # This ensures both models are tested on the same connected subgraph
+    subgraph_data = extract_fixed_subgraph(data, num_nodes=num_nodes, center_node=center_node, num_hops=num_hops)
+
+    # Get node indices and features from extracted subgraph
+    node_indices = torch.from_numpy(subgraph_data['subset_indices']).long()
+    features = torch.from_numpy(subgraph_data['x']).float()
 
     # Get input features (after projection if used)
     with torch.no_grad():
         if model.use_projection:
-            x_proj = model.projection(data.x[node_indices])
+            x_proj = model.projection(features)
             x_proj = torch.relu(x_proj)
             x_input = x_proj
         else:
-            x_input = data.x[node_indices]
+            x_input = features
 
     # Quantize input features
     scale_in = scales['scale_in']
@@ -180,35 +189,35 @@ def export_qat_test_vectors(model, data, scales, output_dir, num_nodes=8):
     np.savetxt(f'{output_dir}/network_input_qat.txt', x_input_quantized, fmt='%d')
     print(f"Exported input features: {x_input_quantized.shape}")
 
-    # Extract subgraph edges
-    edge_mask = (data.edge_index[0] < num_nodes) & (data.edge_index[1] < num_nodes)
-    edge_index_sub = data.edge_index[:, edge_mask]
+    # Use edge_index from extracted subgraph
+    edge_index_sub = torch.from_numpy(subgraph_data['edge_index']).long()
 
     # Save edge index
     edge_index_np = edge_index_sub.cpu().numpy()
-    np.savetxt(f'{output_dir}/edge_index_qat.txt', edge_index_np, fmt='%d')
+    np.savetxt(f'{output_dir}/edge_index_qat.txt', edge_index_np.T, fmt='%d')
     print(f"Exported edge index: {edge_index_np.shape}")
 
-    # Create adjacency matrix (row-normalized for mean aggregation)
-    from torch_geometric.utils import to_dense_adj
-    adj = to_dense_adj(edge_index_sub, max_num_nodes=num_nodes)[0]
-
-    # Row-normalize (mean aggregation)
-    row_sum = adj.sum(dim=1, keepdim=True)
-    row_sum[row_sum == 0] = 1  # Avoid division by zero
-    adj_normalized = (adj / row_sum).cpu().numpy()
+    # Use adjacency matrix from extracted subgraph (already normalized by extract_fixed_subgraph)
+    adj_normalized = subgraph_data['adj_matrix']
     np.savetxt(f'{output_dir}/adj_matrix_qat.txt', adj_normalized, fmt='%.6f')
     print(f"Exported adjacency matrix: {adj_normalized.shape}")
 
     # Generate reference output
     with torch.no_grad():
-        # Run forward pass on subgraph
-        out = model(data.x, data.edge_index)
-        out_sub = out[node_indices]
+        # Run forward pass on the SAME subgraph
+        # Use the subgraph's edge_index, not the full graph
+        if model.use_projection:
+            x_start = x_input  # Already projected
+        else:
+            x_start = features
+
+        out = model.conv1(x_start, edge_index_sub)
+        out = torch.relu(out)
+        out = model.conv2(out, edge_index_sub)
 
     # Quantize output
     scale_out = scales['scale_out']
-    out_quantized = quantize_with_scale(out_sub, scale_out).cpu().numpy()
+    out_quantized = quantize_with_scale(out, scale_out).cpu().numpy()
     np.savetxt(f'{output_dir}/network_output_reference_qat.txt', out_quantized, fmt='%d')
     print(f"Exported reference output: {out_quantized.shape}")
 
@@ -306,9 +315,10 @@ def main():
     print("\nExporting quantized weights...")
     export_qat_weights(model, scales, weights_dir)
 
-    # Export test vectors
+    # Export test vectors (using SAME parameters as PTQ for fair comparison)
     print("\nGenerating test vectors...")
-    export_qat_test_vectors(model, data, scales, vectors_dir, num_nodes=test_nodes)
+    print("  Using same subgraph as PTQ: center_node=0, num_hops=2")
+    export_qat_test_vectors(model, data, scales, vectors_dir, num_nodes=test_nodes, center_node=0, num_hops=2)
 
     # Export scales and parameters
     print("\nExporting scales and parameters...")

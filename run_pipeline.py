@@ -55,10 +55,15 @@ def main():
 
     success = True
 
+    # Determine Python interpreter path
+    python_cmd = os.path.join(script_dir, 'venv', 'bin', 'python')
+    if not os.path.exists(python_cmd):
+        python_cmd = 'python3'  # Fallback to system python
+
     # Step 1: Train base and reduced models
     if (run_all or 'train' in steps_to_run) and not args.skip_training:
         success = run_command(
-            "cd src && python3 train.py",
+            f"cd src && {python_cmd} train.py",
             "Training Base and Reduced Models"
         )
         if not success:
@@ -67,7 +72,7 @@ def main():
     # Step 1b: Train QAT model
     if (run_all or 'train_qat' in steps_to_run) and not args.skip_training:
         success = run_command(
-            "cd src && python3 train_qat.py",
+            f"cd src && {python_cmd} train_qat.py",
             "Training QAT Model (Quantization-Aware Training)"
         )
         if not success:
@@ -77,7 +82,7 @@ def main():
     # Step 2: Extract subgraph
     if run_all or 'subgraph' in steps_to_run:
         success = run_command(
-            "cd src && python3 subgraph_extraction.py",
+            f"cd src && {python_cmd} subgraph_extraction.py",
             "Extracting Fixed Subgraph"
         )
         if not success:
@@ -86,7 +91,7 @@ def main():
     # Step 3: Apply pruning (optional)
     if (run_all or 'prune' in steps_to_run) and not args.skip_pruning:
         success = run_command(
-            "cd src && python3 pruning.py",
+            f"cd src && {python_cmd} pruning.py",
             "Applying Structured Pruning"
         )
         if not success:
@@ -96,7 +101,7 @@ def main():
     if run_all or 'quant' in steps_to_run:
         # Quantize HLS-compatible model (no root_weight)
         success = run_command(
-            "cd src && python3 quantization.py",
+            f"cd src && {python_cmd} quantization.py",
             "PTQ: Quantizing Model to INT8 (Post-Training Quantization)"
         )
         if not success:
@@ -104,7 +109,7 @@ def main():
 
         # Quantize standard model (with root_weight)
         success = run_command(
-            "cd src && python3 quantization.py --use-root-weight",
+            f"cd src && {python_cmd} quantization.py --use-root-weight",
             "PTQ: Quantizing Model to INT8 (with root_weight)"
         )
         if not success:
@@ -113,17 +118,26 @@ def main():
     # Step 4b: Export QAT quantized model
     if run_all or 'quant_qat' in steps_to_run:
         success = run_command(
-            "cd src && python3 quantization_qat.py",
+            f"cd src && {python_cmd} quantization_qat.py",
             "QAT: Exporting Quantized Weights and Test Vectors"
         )
         if not success:
             print("\n[WARNING] QAT export failed, but continuing...")
 
-    # Step 5: Generate test vectors
+    # Step 5: Generate all test vectors (FLOAT, PTQ, QAT)
     if run_all or 'vectors' in steps_to_run:
+        # Generate FLOAT test vectors (for float HLS validation)
         success = run_command(
-            "cd tests && python3 generate_test_vectors.py",
-            "Generating Test Vectors for HLS"
+            f"cd tests && {python_cmd} generate_test_vectors_float.py",
+            "Generating FLOAT Test Vectors (Reduced Model - No Quantization)"
+        )
+        if not success:
+            print("\n[WARNING] Float test vector generation failed, but continuing...")
+
+        # Generate PTQ test vectors (quantized)
+        success = run_command(
+            f"cd tests && {python_cmd} generate_test_vectors.py",
+            "Generating PTQ Test Vectors (Post-Training Quantization)"
         )
         if not success:
             return 1
@@ -131,7 +145,7 @@ def main():
     # Step 6: Analyze models and generate plots
     if (run_all or 'analyze' in steps_to_run) and not args.skip_analysis:
         success = run_command(
-            "cd src && python3 analyze_models.py",
+            f"cd src && {python_cmd} analyze_models.py",
             "Analyzing Models and Generating Plots"
         )
         if not success:
@@ -145,6 +159,7 @@ def main():
     print("\n1. FLOAT BASELINE MODEL:")
     print("  - build/models/base_graphsage_best.pth")
     print("  - build/models/reduced_graphsage_no_root_best.pth")
+    print("  - build/test_vectors_float/ (FLOAT test vectors for HLS)")
     print("\n2. PTQ (POST-TRAINING QUANTIZATION):")
     print("  - build/quantized/ (weights and test vectors)")
     print("  - build/test_vectors/")
@@ -166,7 +181,8 @@ def main():
     print("\nNext steps:")
     print("  1. Review training plots in build/plots/")
     print("  2. Compare FLOAT vs PTQ vs QAT accuracy")
-    print("  3. Use QAT artifacts for HLS implementation (recommended)")
+    print("  3a. For FLOAT HLS validation: cd hls && vitis_hls -f run_csim_float.tcl")
+    print("  3b. For INT8 HLS implementation: Use QAT artifacts (recommended)")
     print("  4. Run HLS C simulation: cd hls && vitis_hls -f run_csim.tcl")
     print("  5. See QAT_scope.txt for HLS integration details")
     print("="*60)

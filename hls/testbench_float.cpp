@@ -1,11 +1,18 @@
 /**
- * Testbench for GraphSAGE FLOAT Implementation - PHASE 1
+ * Testbench for GraphSAGE FLOAT Implementation - Reduced Model
  * 
  * This testbench loads test vectors and runs the FLOAT version of GraphSAGE.
  * It should match PyG output exactly (no quantization errors).
+ * 
+ * Configuration matches reduced model:
+ *   - IN_FEATURES = 16 (after projection)
+ *   - HIDDEN_FEATURES = 24
+ *   - OUT_FEATURES = 7
+ *   - NUM_NODES = 8 (test subgraph)
  */
 
 #include "graphsage_layer_float.h"
+#include "graphsage_layer_float.cpp"  // Include implementation for C simulation
 #include <iostream>
 #include <fstream>
 #include <cmath>
@@ -20,15 +27,16 @@ using namespace std;
 /**
  * Load matrix from text file (float format)
  */
-bool load_float_matrix(const char* filename, float matrix[MAX_NODES][MAX_NODES], int rows, int cols) {
+template<int ROWS, int COLS>
+bool load_float_matrix(const char* filename, float matrix[ROWS][COLS]) {
     ifstream file(filename);
     if (!file.is_open()) {
         cout << "ERROR: Cannot open file: " << filename << endl;
         return false;
     }
 
-    for (int i = 0; i < rows; i++) {
-        for (int j = 0; j < cols; j++) {
+    for (int i = 0; i < ROWS; i++) {
+        for (int j = 0; j < COLS; j++) {
             if (!(file >> matrix[i][j])) {
                 cout << "ERROR: Failed to read element [" << i << "," << j << "] from " << filename << endl;
                 return false;
@@ -37,15 +45,15 @@ bool load_float_matrix(const char* filename, float matrix[MAX_NODES][MAX_NODES],
     }
 
     file.close();
-    cout << "Loaded " << filename << " (" << rows << "x" << cols << ")" << endl;
+    cout << "Loaded " << filename << " (" << ROWS << "x" << COLS << ")" << endl;
     return true;
 }
 
 /**
  * Load INT8 matrix and dequantize to float
  */
-bool load_and_dequantize(const char* filename, float matrix[MAX_NODES][MAX_NODES], 
-                        int rows, int cols, float scale) {
+template<int ROWS, int COLS>
+bool load_and_dequantize(const char* filename, float matrix[ROWS][COLS], float scale) {
     ifstream file(filename);
     if (!file.is_open()) {
         cout << "ERROR: Cannot open file: " << filename << endl;
@@ -53,8 +61,8 @@ bool load_and_dequantize(const char* filename, float matrix[MAX_NODES][MAX_NODES
     }
 
     int value;
-    for (int i = 0; i < rows; i++) {
-        for (int j = 0; j < cols; j++) {
+    for (int i = 0; i < ROWS; i++) {
+        for (int j = 0; j < COLS; j++) {
             if (!(file >> value)) {
                 cout << "ERROR: Failed to read element [" << i << "," << j << "] from " << filename << endl;
                 return false;
@@ -64,15 +72,16 @@ bool load_and_dequantize(const char* filename, float matrix[MAX_NODES][MAX_NODES
     }
 
     file.close();
-    cout << "Loaded and dequantized " << filename << " (" << rows << "x" << cols << ")" << endl;
+    cout << "Loaded and dequantized " << filename << " (" << ROWS << "x" << COLS << ")" << endl;
     return true;
 }
 
 /**
  * Load INT32 vector and dequantize to float (for biases)
  */
-bool load_bias_and_dequantize(const char* filename, float bias[MAX_FEATURES_HIDDEN], 
-                              int size, float scale_in, float scale_weight) {
+template<int SIZE>
+bool load_bias_and_dequantize(const char* filename, float bias[SIZE], 
+                              float scale_in, float scale_weight) {
     ifstream file(filename);
     if (!file.is_open()) {
         cout << "ERROR: Cannot open file: " << filename << endl;
@@ -80,7 +89,7 @@ bool load_bias_and_dequantize(const char* filename, float bias[MAX_FEATURES_HIDD
     }
 
     int value;
-    for (int i = 0; i < size; i++) {
+    for (int i = 0; i < SIZE; i++) {
         if (!(file >> value)) {
             cout << "ERROR: Failed to read element [" << i << "] from " << filename << endl;
             return false;
@@ -91,7 +100,7 @@ bool load_bias_and_dequantize(const char* filename, float bias[MAX_FEATURES_HIDD
     }
 
     file.close();
-    cout << "Loaded and dequantized bias " << filename << " (" << size << ")" << endl;
+    cout << "Loaded and dequantized bias " << filename << " (" << SIZE << ")" << endl;
     return true;
 }
 
@@ -134,78 +143,98 @@ bool load_scales(const char* filename, float &scale_in, float &scale_w1, float &
 
 int main() {
     cout << "======================================================================" << endl;
-    cout << "GraphSAGE FLOAT Testbench - PHASE 1" << endl;
+    cout << "GraphSAGE FLOAT Testbench - Reduced Model" << endl;
     cout << "Goal: Match PyG float output exactly (no quantization errors)" << endl;
+    cout << "Configuration: IN=" << IN_FEATURES << ", HIDDEN=" << HIDDEN_FEATURES 
+         << ", OUT=" << OUT_FEATURES << ", NODES=" << NUM_NODES << endl;
     cout << "======================================================================" << endl;
 
-    // Test configuration
-    const int num_nodes = 8;  // Should match test vectors
-    const char* test_dir = "../build/test_vectors";
+    // Test directory (relative to HLS csim working directory)
+    const char* test_dir = "../../../../../../build/test_vectors_float";
 
-    // Allocate arrays
-    static float adj_matrix[MAX_NODES][MAX_NODES];
-    static float input[MAX_NODES][MAX_FEATURES_IN];
-    static float weights1[MAX_FEATURES_HIDDEN][MAX_FEATURES_IN];
-    static float bias1[MAX_FEATURES_HIDDEN];
-    static float weights2[MAX_FEATURES_OUT][MAX_FEATURES_HIDDEN];
-    static float bias2[MAX_FEATURES_OUT];
-    static float output[MAX_NODES][MAX_FEATURES_OUT];
-    static float reference[MAX_NODES][MAX_FEATURES_OUT];
+    // Allocate arrays with correct dimensions
+    static float adj_matrix[NUM_NODES][NUM_NODES];
+    static float input[NUM_NODES][IN_FEATURES];
+    static float weights1[HIDDEN_FEATURES][IN_FEATURES];
+    static float bias1[HIDDEN_FEATURES];
+    static float weights2[OUT_FEATURES][HIDDEN_FEATURES];
+    static float bias2[OUT_FEATURES];
+    static float output[NUM_NODES][OUT_FEATURES];
+    static float reference[NUM_NODES][OUT_FEATURES];
 
-    // Load scales
-    float scale_in, scale_w1, scale_w2, scale_hidden, scale_out;
-    char scales_file[256];
-    sprintf(scales_file, "%s/scales.txt", test_dir);
-    if (!load_scales(scales_file, scale_in, scale_w1, scale_w2, scale_hidden, scale_out)) {
-        return 1;
-    }
-
-    // Load adjacency matrix (already in float)
+    // Load adjacency matrix (FLOAT)
     char adj_file[256];
     sprintf(adj_file, "%s/adj_matrix.txt", test_dir);
-    if (!load_float_matrix(adj_file, adj_matrix, num_nodes, num_nodes)) {
+    if (!load_float_matrix<NUM_NODES, NUM_NODES>(adj_file, adj_matrix)) {
         return 1;
     }
 
-    // Load input (INT8 → dequantize to float)
+    // Load input features (FLOAT)
     char input_file[256];
     sprintf(input_file, "%s/network_input.txt", test_dir);
-    if (!load_and_dequantize(input_file, input, num_nodes, MAX_FEATURES_IN, scale_in)) {
+    if (!load_float_matrix<NUM_NODES, IN_FEATURES>(input_file, input)) {
         return 1;
     }
 
-    // Load weights1 (INT8 → dequantize to float)
+    // Load weights1 (FLOAT)
     char w1_file[256];
     sprintf(w1_file, "%s/weights_layer1.txt", test_dir);
-    if (!load_and_dequantize(w1_file, weights1, MAX_FEATURES_HIDDEN, MAX_FEATURES_IN, scale_w1)) {
+    if (!load_float_matrix<HIDDEN_FEATURES, IN_FEATURES>(w1_file, weights1)) {
         return 1;
     }
 
-    // Load bias1 (INT32 → dequantize to float)
+    // Load bias1 (FLOAT)
     char b1_file[256];
     sprintf(b1_file, "%s/bias_layer1.txt", test_dir);
-    if (!load_bias_and_dequantize(b1_file, bias1, MAX_FEATURES_HIDDEN, scale_in, scale_w1)) {
+    
+    // Load as 1D array first, then copy
+    float bias1_temp[HIDDEN_FEATURES];
+    ifstream b1(b1_file);
+    if (!b1.is_open()) {
+        cout << "ERROR: Cannot open file: " << b1_file << endl;
         return 1;
     }
+    for (int i = 0; i < HIDDEN_FEATURES; i++) {
+        if (!(b1 >> bias1_temp[i])) {
+            cout << "ERROR: Failed to read bias1[" << i << "]" << endl;
+            return 1;
+        }
+        bias1[i] = bias1_temp[i];
+    }
+    b1.close();
+    cout << "Loaded " << b1_file << " (" << HIDDEN_FEATURES << ")" << endl;
 
-    // Load weights2 (INT8 → dequantize to float)
+    // Load weights2 (FLOAT)
     char w2_file[256];
     sprintf(w2_file, "%s/weights_layer2.txt", test_dir);
-    if (!load_and_dequantize(w2_file, weights2, MAX_FEATURES_OUT, MAX_FEATURES_HIDDEN, scale_w2)) {
+    if (!load_float_matrix<OUT_FEATURES, HIDDEN_FEATURES>(w2_file, weights2)) {
         return 1;
     }
 
-    // Load bias2 (INT32 → dequantize to float)
+    // Load bias2 (FLOAT)
     char b2_file[256];
     sprintf(b2_file, "%s/bias_layer2.txt", test_dir);
-    if (!load_bias_and_dequantize(b2_file, bias2, MAX_FEATURES_OUT, scale_hidden, scale_w2)) {
+    
+    float bias2_temp[OUT_FEATURES];
+    ifstream b2(b2_file);
+    if (!b2.is_open()) {
+        cout << "ERROR: Cannot open file: " << b2_file << endl;
         return 1;
     }
+    for (int i = 0; i < OUT_FEATURES; i++) {
+        if (!(b2 >> bias2_temp[i])) {
+            cout << "ERROR: Failed to read bias2[" << i << "]" << endl;
+            return 1;
+        }
+        bias2[i] = bias2_temp[i];
+    }
+    b2.close();
+    cout << "Loaded " << b2_file << " (" << OUT_FEATURES << ")" << endl;
 
-    // Load reference output (INT8 → dequantize to float)
+    // Load reference output (FLOAT)
     char ref_file[256];
     sprintf(ref_file, "%s/network_output_reference.txt", test_dir);
-    if (!load_and_dequantize(ref_file, reference, num_nodes, MAX_FEATURES_OUT, scale_out)) {
+    if (!load_float_matrix<NUM_NODES, OUT_FEATURES>(ref_file, reference)) {
         return 1;
     }
 
@@ -215,7 +244,7 @@ int main() {
 
     // Print input sample
     cout << "\nInput sample [0,:5]: ";
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < min(5, IN_FEATURES); i++) {
         cout << fixed << setprecision(4) << input[0][i] << " ";
     }
     cout << endl;
@@ -228,8 +257,7 @@ int main() {
         bias1,
         weights2,
         bias2,
-        output,
-        num_nodes
+        output
     );
 
     cout << "\n======================================================================" << endl;
@@ -238,13 +266,13 @@ int main() {
 
     // Print output samples
     cout << "\nHLS Output [0,:]: ";
-    for (int i = 0; i < MAX_FEATURES_OUT; i++) {
+    for (int i = 0; i < OUT_FEATURES; i++) {
         cout << fixed << setprecision(4) << output[0][i] << " ";
     }
     cout << endl;
 
     cout << "Reference  [0,:]: ";
-    for (int i = 0; i < MAX_FEATURES_OUT; i++) {
+    for (int i = 0; i < OUT_FEATURES; i++) {
         cout << fixed << setprecision(4) << reference[0][i] << " ";
     }
     cout << endl;
@@ -254,8 +282,8 @@ int main() {
     float max_diff = 0.0f;
     float tolerance = 0.01f;  // 1% tolerance for float comparison
 
-    for (int i = 0; i < num_nodes; i++) {
-        for (int j = 0; j < MAX_FEATURES_OUT; j++) {
+    for (int i = 0; i < NUM_NODES; i++) {
+        for (int j = 0; j < OUT_FEATURES; j++) {
             float diff = fabs(output[i][j] - reference[i][j]);
             float rel_diff = diff / (fabs(reference[i][j]) + 1e-6f);
             
@@ -278,14 +306,14 @@ int main() {
     cout << "======================================================================" << endl;
     cout << "Max absolute difference: " << max_diff << endl;
     cout << "Errors (>" << (tolerance*100) << "% relative): " << errors 
-         << " / " << (num_nodes * MAX_FEATURES_OUT) << endl;
+         << " / " << (NUM_NODES * OUT_FEATURES) << endl;
 
     if (errors == 0) {
-        cout << "\n✓ PHASE 1 PASSED: HLS FLOAT matches PyG reference!" << endl;
-        cout << "Next step: Proceed to Phase 2 (INT8 quantization)" << endl;
+        cout << "\n✓ FLOAT TESTBENCH PASSED: HLS matches PyG reference!" << endl;
+        cout << "Ready for synthesis with reduced model configuration" << endl;
         return 0;
     } else {
-        cout << "\n✗ PHASE 1 FAILED: HLS FLOAT does not match reference" << endl;
+        cout << "\n✗ FLOAT TESTBENCH FAILED: HLS does not match reference" << endl;
         cout << "Debug: Check aggregation, linear transform, or weight loading" << endl;
         return 1;
     }
