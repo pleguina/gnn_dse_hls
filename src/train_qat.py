@@ -16,6 +16,7 @@ torch.serialization.add_safe_globals([Data])
 
 from model_qat import ReducedGraphSAGEQAT
 from visualization import plot_training_curves
+from config import get_config
 
 
 def train_qat(model, data, optimizer, enable_fake_quant=True):
@@ -76,10 +77,11 @@ def test_qat(model, data, enable_fake_quant=True):
     return train_acc, val_acc, test_acc
 
 
-def calibrate_qat_model(model, data, num_batches=10):
+def calibrate_qat_model(model, data, num_batches=50):
     """
     Calibrate QAT observers to collect activation statistics.
     This should be done before training to initialize scale/zero-point.
+    Increased to 50 batches for more stable initialization.
     """
     print("\nCalibrating QAT observers...")
     model.eval()
@@ -88,8 +90,10 @@ def calibrate_qat_model(model, data, num_batches=10):
 
     with torch.no_grad():
         # Run several forward passes to collect statistics
-        for _ in range(num_batches):
+        for i in range(num_batches):
             _ = model(data.x, data.edge_index)
+            if (i + 1) % 10 == 0:
+                print(f"  Calibration batch {i+1}/{num_batches}")
 
     model.disable_observer()
     print("Calibration complete!")
@@ -114,20 +118,46 @@ def load_cora_dataset(root='../data'):
 
 
 def train_qat_model(
-    epochs=200,
-    lr=0.01,
-    in_channels_reduced=16,
-    hidden_channels=24,
-    dropout=0.5,
-    root_weight=False
+    epochs=None,
+    lr=None,
+    in_channels_reduced=None,
+    hidden_channels=None,
+    dropout=None,
+    root_weight=None,
+    use_config=True
 ):
     """
     Train QAT-enabled GraphSAGE model for FPGA implementation.
 
     Args:
-        root_weight: If False (default), HLS-compatible (W_l * h_agg + b_l only)
-                     If True, uses full GraphSAGE (W_l * h_agg + b_l + W_r * x_i)
+        epochs: Number of training epochs (default: from config)
+        lr: Learning rate (default: from config)
+        in_channels_reduced: Projected input dimension (default: from config)
+        hidden_channels: Hidden layer dimension (default: from config)
+        dropout: Dropout rate (default: from config)
+        root_weight: If False, HLS-compatible (default: from config)
+        use_config: If True, load defaults from config file
     """
+    # Load configuration
+    if use_config:
+        cfg = get_config()
+        epochs = epochs or cfg.qat_epochs
+        lr = lr or cfg.qat_lr
+        in_channels_reduced = in_channels_reduced or cfg.qat_in_channels
+        hidden_channels = hidden_channels or cfg.qat_hidden_channels
+        dropout = dropout or cfg.qat_dropout
+        root_weight = root_weight if root_weight is not None else cfg.qat_root_weight
+        calibration_batches = cfg.qat_calibration_batches
+    else:
+        # Fallback to hardcoded defaults if config disabled
+        epochs = epochs or 200
+        lr = lr or 0.01
+        in_channels_reduced = in_channels_reduced or 16
+        hidden_channels = hidden_channels or 24
+        dropout = dropout or 0.5
+        root_weight = root_weight if root_weight is not None else False
+        calibration_batches = 50
+
     suffix = "_qat" if root_weight else "_qat_no_root"
     print("\n" + "="*60)
     print(f"Training QAT GraphSAGE Model (FPGA-friendly)")
@@ -159,11 +189,24 @@ def train_qat_model(
     print(f'\nModel architecture:\n{model}')
     print(f'Number of parameters: {sum(p.numel() for p in model.parameters())}')
 
+    # Print configuration being used
+    if use_config:
+        active_cfg = cfg.get('active_qat_config', 'qat_model')
+        print(f'\n📋 Using config: {active_cfg}')
+        print(f'   Architecture: {in_channels_reduced} → {hidden_channels} → {dataset.num_classes}')
+        print(f'   Learning rate: {lr}')
+        print(f'   Calibration batches: {calibration_batches}')
+
     # Calibrate observers before training
-    calibrate_qat_model(model, data, num_batches=10)
+    calibrate_qat_model(model, data, num_batches=calibration_batches)
 
     # Optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=5e-4)
+
+    # Learning rate scheduler for better convergence
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='max', factor=0.5, patience=20
+    )
 
     # Training loop with history tracking
     history = {
@@ -195,6 +238,9 @@ def train_qat_model(
         history['train_acc_float'].append(train_acc_float)
         history['val_acc_float'].append(val_acc_float)
         history['test_acc_float'].append(test_acc_float)
+
+        # Update learning rate based on validation accuracy
+        scheduler.step(val_acc)
 
         if val_acc > best_val_acc:
             best_val_acc = val_acc
@@ -245,11 +291,12 @@ def train_qat_model(
 
 
 if __name__ == '__main__':
-    # Train QAT model WITHOUT root_weight (HLS-compatible)
+    # Train QAT model using config defaults
+    # To override, use: train_qat_model(epochs=100, in_channels_reduced=32, etc.)
     print("\n" + "="*60)
-    print("Training QAT Model WITHOUT root_weight (HLS-compatible)")
+    print("Training QAT Model (using config)")
     print("="*60)
-    qat_model, data, qat_history = train_qat_model(epochs=200, root_weight=False)
+    qat_model, data, qat_history = train_qat_model()  # Uses config defaults
 
     print("\n" + "="*60)
     print("QAT Training Complete!")

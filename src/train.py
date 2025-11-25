@@ -17,6 +17,7 @@ torch.serialization.add_safe_globals([Data])
 
 from model_base import GraphSAGE, ReducedGraphSAGE
 from visualization import plot_training_curves
+from config import get_config
 
 
 def train(model, data, optimizer):
@@ -77,8 +78,20 @@ def load_cora_dataset(root='../data'):
     return dataset, data
 
 
-def train_base_model(epochs=200, lr=0.01, hidden_channels=64, dropout=0.5):
+def train_base_model(epochs=None, lr=None, hidden_channels=None, dropout=None, use_config=True):
     """Train base GraphSAGE model on full Cora dataset."""
+    # Load configuration
+    if use_config:
+        cfg = get_config()
+        epochs = epochs or cfg.base_epochs
+        lr = lr or cfg.base_lr
+        hidden_channels = hidden_channels or cfg.base_hidden_channels
+        dropout = dropout or cfg.base_dropout
+    else:
+        epochs = epochs or 200
+        lr = lr or 0.01
+        hidden_channels = hidden_channels or 64
+        dropout = dropout or 0.5
     print("\n" + "="*60)
     print("Training Base GraphSAGE Model")
     print("="*60)
@@ -152,15 +165,38 @@ def train_base_model(epochs=200, lr=0.01, hidden_channels=64, dropout=0.5):
     return model, data, history
 
 
-def train_reduced_model(epochs=200, lr=0.01, in_channels_reduced=16,
-                       hidden_channels=24, dropout=0.5, root_weight=True):
+def train_reduced_model(epochs=None, lr=None, in_channels_reduced=None,
+                       hidden_channels=None, dropout=None, root_weight=None,
+                       use_config=True):
     """
     Train reduced GraphSAGE model for FPGA implementation.
-    
+
     Args:
-        root_weight: If True, uses W_l * h_agg + b_l + W_r * x_i (default PyG)
-                     If False, uses W_l * h_agg + b_l (HLS-compatible, simpler)
+        epochs: Number of training epochs (default: from config)
+        lr: Learning rate (default: from config)
+        in_channels_reduced: Projected input dimension (default: from config)
+        hidden_channels: Hidden layer dimension (default: from config)
+        dropout: Dropout rate (default: from config)
+        root_weight: If False, HLS-compatible (default: from config)
+        use_config: If True, load defaults from config file
     """
+    # Load configuration
+    if use_config:
+        cfg = get_config()
+        epochs = epochs or cfg.reduced_epochs
+        lr = lr or cfg.reduced_lr
+        in_channels_reduced = in_channels_reduced or cfg.reduced_in_channels
+        hidden_channels = hidden_channels or cfg.reduced_hidden_channels
+        dropout = dropout or cfg.reduced_dropout
+        root_weight = root_weight if root_weight is not None else cfg.reduced_root_weight
+    else:
+        # Fallback to hardcoded defaults
+        epochs = epochs or 200
+        lr = lr or 0.01
+        in_channels_reduced = in_channels_reduced or 16
+        hidden_channels = hidden_channels or 24
+        dropout = dropout or 0.5
+        root_weight = root_weight if root_weight is not None else True
     suffix = "" if root_weight else "_no_root"
     print("\n" + "="*60)
     print(f"Training Reduced GraphSAGE Model (FPGA-friendly{suffix})")
@@ -188,6 +224,13 @@ def train_reduced_model(epochs=200, lr=0.01, in_channels_reduced=16,
 
     print(f'\nModel architecture:\n{model}')
     print(f'Number of parameters: {sum(p.numel() for p in model.parameters())}')
+
+    # Print configuration being used
+    if use_config:
+        print(f'\n📋 Using config: reduced_model')
+        print(f'   Architecture: {in_channels_reduced} → {hidden_channels} → {dataset.num_classes}')
+        print(f'   Learning rate: {lr}, Epochs: {epochs}')
+        print(f'   Root weight: {root_weight}')
 
     # Optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=5e-4)

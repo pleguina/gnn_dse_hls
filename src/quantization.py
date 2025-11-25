@@ -7,6 +7,7 @@ import torch
 import numpy as np
 import json
 from model_base import ReducedGraphSAGE
+from config import get_config
 
 
 class QuantizationParams:
@@ -201,16 +202,22 @@ if __name__ == '__main__':
     if not root_weight:
         print("NOTE: This is the HLS-compatible version (simpler formula)")
     
+    # Load configuration
+    cfg = get_config()
+
     # Load reduced model
     model = ReducedGraphSAGE(
-        in_channels=1433,
-        in_channels_reduced=16,
-        hidden_channels=24,
-        out_channels=7,
-        dropout=0.5,
+        in_channels=cfg.num_features,
+        in_channels_reduced=cfg.reduced_in_channels,
+        hidden_channels=cfg.reduced_hidden_channels,
+        out_channels=cfg.num_classes,
+        dropout=cfg.reduced_dropout,
         use_projection=True,
         root_weight=root_weight
     )
+
+    print(f"📋 Using config: reduced_model")
+    print(f"   Architecture: {cfg.reduced_in_channels} → {cfg.reduced_hidden_channels} → {cfg.num_classes}")
 
     # Load trained weights
     try:

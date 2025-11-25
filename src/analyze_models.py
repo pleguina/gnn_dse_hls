@@ -15,6 +15,7 @@ from torch_geometric.datasets import Planetoid
 from torch_geometric.transforms import NormalizeFeatures
 from torch_geometric.data import Data
 from quantization import quantize_tensor
+from config import get_config
 
 # Fix for PyTorch 2.6+ weights_only default change
 torch.serialization.add_safe_globals([Data])
@@ -112,9 +113,13 @@ def analyze_quantization_effect(model, layer_name='conv1'):
 
 
 def main():
+    # Load configuration
+    cfg = get_config()
+
     print("="*60)
     print("GraphSAGE Model Analysis and Visualization")
     print("="*60)
+    print(f"📋 Using configuration file")
 
     # Load dataset
     print("\nLoading Cora dataset...")
@@ -130,9 +135,9 @@ def main():
 
     base_model = GraphSAGE(
         in_channels=dataset.num_features,
-        hidden_channels=64,
+        hidden_channels=cfg.base_hidden_channels,
         out_channels=dataset.num_classes,
-        dropout=0.5
+        dropout=cfg.base_dropout
     )
 
     try:
@@ -166,10 +171,10 @@ def main():
 
     reduced_model = ReducedGraphSAGE(
         in_channels=dataset.num_features,
-        in_channels_reduced=16,
-        hidden_channels=24,
+        in_channels_reduced=cfg.reduced_in_channels,
+        hidden_channels=cfg.reduced_hidden_channels,
         out_channels=dataset.num_classes,
-        dropout=0.5,
+        dropout=cfg.reduced_dropout,
         use_projection=True
     )
 

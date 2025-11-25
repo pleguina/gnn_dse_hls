@@ -15,6 +15,7 @@ from torch_geometric.data import Data
 torch.serialization.add_safe_globals([Data])
 
 from model_qat import ReducedGraphSAGEQAT
+from config import get_config
 
 
 def extract_qat_scales(model):
@@ -243,16 +244,21 @@ def export_scales_and_params(scales, output_dir):
 
 def main():
     """Main export function."""
+    # Load configuration
+    cfg = get_config()
+
     print("\n" + "="*60)
     print("QAT Quantization Export")
     print("="*60)
+    print(f"📋 Using config: {cfg.get('active_qat_config', 'qat_model')}")
 
     # Load dataset
     dataset = Planetoid(root='../data', name='Cora', transform=NormalizeFeatures())
     data = dataset[0]
 
     # Load trained QAT model
-    model_path = '../build/models/reduced_graphsage_qat_no_root_best.pth'
+    models_dir = cfg.get('paths.models', '../build/models')
+    model_path = f'{models_dir}/reduced_graphsage_qat_no_root_best.pth'
 
     if not os.path.exists(model_path):
         print(f"[ERROR] QAT model not found at {model_path}")
@@ -286,9 +292,15 @@ def main():
         if not key.endswith('_per_channel'):
             print(f"  {key}: {value}")
 
-    # Create output directories
-    weights_dir = '../build/quantized_qat'
-    vectors_dir = '../build/test_vectors_qat'
+    # Create output directories from config
+    weights_dir = cfg.get('quantization.output_dir_qat', '../build/quantized_qat')
+    vectors_dir = cfg.get('quantization.test_vectors_dir_qat', '../build/test_vectors_qat')
+    test_nodes = cfg.get('quantization.test_subgraph_nodes', 8)
+
+    print(f"\nOutput directories:")
+    print(f"  Weights: {weights_dir}")
+    print(f"  Test vectors: {vectors_dir}")
+    print(f"  Test subgraph nodes: {test_nodes}")
 
     # Export weights
     print("\nExporting quantized weights...")
@@ -296,7 +308,7 @@ def main():
 
     # Export test vectors
     print("\nGenerating test vectors...")
-    export_qat_test_vectors(model, data, scales, vectors_dir, num_nodes=8)
+    export_qat_test_vectors(model, data, scales, vectors_dir, num_nodes=test_nodes)
 
     # Export scales and parameters
     print("\nExporting scales and parameters...")

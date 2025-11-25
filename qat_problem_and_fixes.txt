@@ -1,0 +1,400 @@
+QAT_SAGEConv_analysis.txt
+
+Context and goal
+
+We are training a small GraphSAGE-based GNN on Cora, with three variants:
+
+Float baseline (full-size model)
+
+Float reduced model (FPGA-friendly: 16 → 24 → 7)
+
+Quantized models:
+
+PTQ (Post-Training Quantization)
+
+QAT (Quantization-Aware Training, INT8 activations and weights)
+
+Observed results:
+
+Float baseline: ~75.6% (val)
+
+Float reduced: ~75.7% (val)
+
+PTQ reduced model: ~74% (val, estimated/measured)
+
+QAT reduced model: ~46–51% (val)
+
+Conclusion: PTQ behaves as expected (small accuracy drop). QAT behaves badly (huge drop of ~25–30 percentage points) and needs debugging.
+
+The aim is to deploy the reduced model on FPGA (HLS implementation), so we care that the quantization scheme matches what hardware will do, and that accuracy is acceptable.
+
+What is good / correct in the current setup
+
+2.1. SAGEConvQAT design
+
+The SAGEConvQAT layer is structurally correct:
+
+It inherits from PyG’s MessagePassing and uses the same aggregation logic as SAGEConv.
+
+It supports:
+
+root_weight
+
+project
+
+normalize
+
+arbitrary aggregation (mean by default).
+
+The quantized dataflow is:
+
+Optional projection:
+x → Linear (projection) → ReLU → (fake quant) → x_projected
+
+Input features:
+x_src, x_tgt → fake quant (act_in_fake_quant)
+
+Message passing:
+message(x_j) = x_j
+aggregate over neighbors with the configured aggr (usually mean).
+
+Aggregated output:
+h_agg → fake quant (act_agg_fake_quant)
+
+Left branch:
+quantized weights w_l_q = w_l_fake_quant(self.lin_l.weight)
+out_left = F.linear(h_agg, w_l_q, bias)
+
+Right branch (if root_weight=True):
+x_r → fake quant (act_in_fake_quant) → x_r_q
+w_r_q = w_r_fake_quant(self.lin_r.weight)
+out_right = F.linear(x_r_q, w_r_q, no bias)
+out = out_left + out_right
+
+Final activation:
+out → fake quant (act_out_fake_quant)
+optionally L2 normalize if normalize=True.
+
+This matches GraphSAGE math with realistic quantization points, and is exactly the kind of structure you want to later reproduce in fixed-point HLS.
+
+2.2. Quantization choices
+
+Activations: per-tensor symmetric FakeQuant with MovingAverageMinMaxObserver.
+
+Weights: per-channel symmetric FakeQuant with MovingAveragePerChannelMinMaxObserver on ch_axis=0 (output channel).
+
+This is a standard and reasonable choice for INT8 conv/linear layers in practice.
+
+2.3. Training infrastructure
+
+The training script tracks:
+
+train loss
+
+train/val/test accuracy with fake quant enabled
+
+train/val/test accuracy without fake quant (float path)
+
+There is a calibration phase, a scheduler, and history/plots are stored.
+
+The pipeline outputs:
+
+trained models
+
+plots
+
+quantized artifacts (later).
+
+PTQ pipeline achieves ~74% accuracy, which confirms that:
+
+The quantization arithmetic itself is OK.
+
+The reduced model (16 → 24 → 7) is capable of handling INT8 reasonably well.
+
+What is going wrong with QAT
+
+Despite the correct SAGEConvQAT design, the QAT training procedure has a few key issues that explain the ~50% accuracy plateau.
+
+3.1. Calibration on random weights
+
+Current order in train_qat_model:
+
+Create QAT model with random initialization.
+
+Immediately run calibrate_qat_model(model, data, num_batches=calibration_batches).
+
+Calibrate function:
+
+Enables observers + fake quant.
+
+Runs a number of forward passes.
+
+Observers collect min/max activation statistics.
+
+Observers are then disabled (frozen).
+
+Problem:
+
+All calibration is done with a completely untrained, random network.
+
+The activation distributions at this point do not resemble those of a trained model.
+
+The min/max ranges stored in the observers are essentially “garbage ranges”.
+
+Later, during training, when weights change and activations become more meaningful, the quantizers are still using those old scales. This induces a strong quantization mismatch and makes optimization hard.
+
+3.2. Observers disabled for the entire training
+
+In train_qat:
+
+For each epoch:
+
+model.train()
+
+model.enable_fake_quant()
+
+model.disable_observer()
+
+So:
+
+Observers only run during the calibration phase.
+
+During training, the scales/zero-points never update again.
+
+This logic is correct only if:
+
+Calibration is done on a reasonable, already trained float model whose activations are close to those that will be seen during QAT training.
+
+In the current situation, we calibrate on a random model and then freeze observers forever. As weights change, activation distributions drift, but quantization ranges remain frozen and no longer fit the data. This alone can easily cause tens of percentage points of accuracy loss.
+
+3.3. Learning rate too high for QAT and small model
+
+The QAT training uses the same LR as the float training:
+
+lr = 0.01, with Adam.
+
+In QAT:
+
+Fake quantization (with STE) makes the loss landscape more jagged and less smooth.
+
+A tiny model (16 → 24 → 7) has limited capacity to “absorb” quantization noise.
+
+A learning rate of 0.01, combined with wrong/frozen quantization ranges, tends to push the optimizer around in a very noisy regime where it fails to converge to a good solution. This is particularly problematic for small networks.
+
+3.4. Model size and QAT sensitivity
+
+The reduced model is intentionally small for FPGA:
+
+Input: 16 (projected features)
+
+Hidden: 24 units
+
+Output: 7 classes
+
+Reasons why such a small model is more fragile under QAT:
+
+Quantization effectively reduces precision (from 23 bits mantissa in FP32 to ~7 bits of dynamic range in INT8).
+
+Small hidden layers have fewer degrees of freedom to compensate for this noise.
+
+Any mismatch in activation scaling hurts more because there’s less redundancy.
+
+This does not mean QAT is impossible on this model (PTQ already shows INT8 is viable), but it magnifies the impact of the procedural mistakes described above.
+
+Proposed fixes and improved QAT strategy
+
+4.1. Warm-start QAT from a pretrained float reduced model
+
+Instead of starting QAT from scratch with random weights:
+
+Train the float reduced model (16 → 24 → 7) as you already do.
+
+Save its state dict (you already do this for the float runs).
+
+When creating the QAT model:
+
+Instantiate ReducedGraphSAGEQAT with the same architecture.
+
+Load the float weights into the matching layers:
+
+projection layer
+
+SAGEConvQAT layers
+
+classifier MLP.
+
+This gives your QAT model a good starting point with already meaningful activations, closer to the calibration and deployment regime.
+
+4.2. Calibrate AFTER loading float weights (or during early epochs)
+
+Calibration should be done:
+
+After loading float-trained weights into the QAT model, or
+
+During early epochs of QAT training while observers are still active.
+
+Correct sequence:
+
+Build QAT model.
+
+Copy weights from best float reduced model.
+
+Enable observers + fake quant.
+
+Run several forward passes on training data (no gradients) to collect activation stats.
+
+Then disable observers (freeze scales).
+
+This way, quantization ranges represent realistic activations and the model can adapt to fake quant noise without being strangled by bad scales.
+
+Alternative (if you do not want a separate float phase):
+
+Start QAT training with observers ON for the first N epochs (e.g. 20–30).
+
+After that, disable observers to freeze scales.
+
+This allows the ranges to adapt as weights move from random to useful values.
+
+4.3. Reduce learning rate for QAT fine-tuning
+
+For the QAT phase (after float pretraining + calibration), use a smaller LR:
+
+Instead of lr = 0.01, try:
+
+lr = 0.001, or
+
+lr = 0.0005.
+
+For your “large” QAT config (32 → 48 → 7), lr = 0.005 is a decent starting point.
+
+The idea: in QAT you do not want to dramatically move weights; you just want to slightly adapt the pretrained float solution so it works well under quantization constraints. Too large LR plus noisy STE gradients results in unstable training.
+
+4.4. Optional: temporarily simplify quantization for debugging
+
+To pinpoint where accuracy is lost, you can try controlled experiments:
+
+Weights-only QAT (no activation quant):
+
+Temporarily bypass activation fake quant modules (make them return x directly).
+
+Keep w_l_fake_quant and w_r_fake_quant active.
+
+Train and evaluate.
+
+If accuracy stays close to 74–75%, then the main problem lies in activation quantization and/or its ranges.
+
+Disable projection activation quant:
+
+Keep everything else, but comment out act_proj_fake_quant after the projection.
+
+See if the front-end quantization is causing disproportionate damage.
+
+These tests are diagnostic tools. Once you understand the main bottleneck, you can restore full quantization step by step.
+
+4.5. Consider slightly larger model for QAT
+
+Your config already includes:
+
+qat_model_large: 32 input reduced → 48 hidden → 7 output.
+
+This is a good idea because:
+
+More hidden units give more capacity to absorb quantization noise.
+
+Industry practice is often to use a slightly larger model when heavy quantization is required for deployment.
+
+For the FPGA, you can then decide:
+
+If 32 → 48 → 7 fits in resources, use it.
+
+If not, you can still use PTQ on 16 → 24 → 7, which already behaves well.
+
+Professional recommendation for FPGA deployment
+
+Given current results:
+
+Float reduced model: ~75.7% accuracy.
+
+PTQ reduced model: ~74% accuracy.
+
+QAT reduced model: ~50% accuracy (due to training procedure issues).
+
+The most robust and professional path is:
+
+Short-term (for the first FPGA prototype):
+
+Use PTQ artifacts:
+
+Use the PTQ quantized weights, scales, and test vectors you already generate.
+
+Implement these INT8 operations in HLS.
+
+Validate that the FPGA inference matches the PTQ PyTorch inference bit-by-bit.
+
+This gives you:
+
+A working FPGA prototype.
+
+A clean story: “Float vs PTQ vs FPGA” with small accuracy gap.
+
+Medium-term (QAT as an improvement):
+
+Fix the QAT pipeline with the changes above:
+
+Warm-start from float reduced model.
+
+Calibrate after loading float weights.
+
+Use smaller LR and optionally a slightly larger model.
+
+Aim for QAT accuracy within 1–3% of the float reduced model.
+
+Once QAT is healthy, you can export QAT-trained INT8 weights and compare:
+
+Float baseline vs PTQ vs QAT vs FPGA-QAT.
+
+This becomes a strong, professional narrative:
+
+PTQ is enough for a first FPGA implementation.
+
+QAT is used to further harden the model under quantization constraints and can potentially improve the robustness and accuracy of the deployed model.
+
+Summary
+
+Good:
+
+The SAGEConvQAT implementation is conceptually correct.
+
+Message passing and quantization points align with what you want in hardware.
+
+PTQ results (≈74%) show that INT8 is viable on this reduced model.
+
+The training framework produces useful logs, figures, and artifacts for HLS.
+
+Problems:
+
+QAT calibration is done on random weights, so activation ranges are wrong.
+
+Observers are disabled during all training epochs, freezing bad scales.
+
+The learning rate is too high for QAT and a very small model.
+
+Small hidden dimension (16 → 24 → 7) increases sensitivity to any quantization mismatch.
+
+Proposed fixes:
+
+Warm-start QAT from a pretrained float reduced model.
+
+Calibrate observers after loading float weights, or keep observers on during early epochs.
+
+Reduce the learning rate during QAT (e.g. 0.001 or 0.0005).
+
+Optionally test weights-only quantization and/or remove some activation fake quant for debugging.
+
+Optionally use a slightly larger QAT model (32 → 48 → 7) if resources allow.
+
+For FPGA:
+
+Use PTQ weights and scales as the primary path for the first HLS implementation.
+
+Treat QAT as a second step to refine robustness and provide a stronger result in the paper.
