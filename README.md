@@ -19,24 +19,89 @@ This project implements a GraphSAGE model for node classification on the Cora da
 ```
 simple-gnn/
 ├── src/                          # Python source code
-│   ├── model_base.py            # GraphSAGE model definitions
-│   ├── train.py                 # Training scripts
+│   ├── model_base.py            # Base GraphSAGE model (no root connection)
+│   ├── model_base_QAT.py        # QAT-compatible GraphSAGE model
+│   ├── model_qat.py             # QAT model with fake quantization
+│   ├── train.py                 # Training script for base & reduced models
+│   ├── train_qat.py             # QAT training script
 │   ├── subgraph_extraction.py   # Subgraph extraction utilities
-│   ├── pruning.py               # Structured pruning utilities
-│   └── quantization.py          # INT8 quantization utilities
+│   ├── quantization_ptq.py      # PTQ (Post-Training Quantization) utilities
+│   ├── quantization_qat.py      # QAT (Quantization-Aware Training) utilities
+│   ├── prepare_ptq_int8_parameters.py  # Convert PTQ to integer-only format
+│   ├── export_biases.py         # Export float biases for INT32 conversion
+│   ├── analyze_models.py        # Model analysis and comparison
+│   ├── visualization.py         # Visualization utilities
+│   ├── config.py                # Configuration management
+│   └── deprecated/              # Old/unused source files
 ├── hls/                         # HLS C++ implementation
-│   ├── graphsage_layer.h        # Header file with declarations
-│   ├── graphsage_layer.cpp      # HLS implementation
-│   └── testbench.cpp            # Testbench for validation
-├── tests/                       # Test scripts and vectors
-│   ├── generate_test_vectors.py # Generate test vectors from model
-│   └── test_vectors/            # Generated test data
-├── models/                      # Saved model checkpoints
+│   ├── graphsage_layer_float.h  # Float HLS header
+│   ├── graphsage_layer_float.cpp # Float HLS implementation
+│   ├── graphsage_layer.h        # PTQ float quant/dequant HLS header
+│   ├── graphsage_layer.cpp      # PTQ float quant/dequant HLS implementation
+│   ├── testbench_float.cpp      # Float HLS testbench
+│   ├── testbench.cpp            # PTQ HLS testbench
+│   ├── Makefile                 # Build system for PTQ HLS
+│   ├── Makefile.float           # Build system for float HLS
+│   └── *.tcl                    # Vivado HLS TCL scripts
+├── tests/                       # Test scripts and utilities
+│   ├── generate_test_vectors_float.py       # Float model test vectors
+│   ├── generate_test_vectors_ptq_float.py   # PTQ float quant/dequant vectors
+│   ├── generate_test_vectors_ptq_int8.py    # PTQ integer-only vectors
+│   ├── generate_all_test_vectors.py         # Unified generator wrapper
+│   ├── compare_hls_vs_python.py             # Compare HLS vs Python outputs
+│   ├── compare_python_vs_hls_testbench.py   # Python testbench for HLS validation
+│   ├── evaluate_ptq_int8_accuracy.py        # Evaluate integer PTQ accuracy
+│   ├── debug_ptq_node6.py                   # Debug PTQ for specific node
+│   ├── verify_float_reference.py            # Verify float model outputs
+│   ├── old_generators/          # Old test vector generators
+│   └── deprecated/              # Old/unused test scripts
+├── build/                       # Build outputs
+│   ├── models/                  # Trained model checkpoints
+│   │   ├── 1_base_full.pth     # Base model with root connection
+│   │   ├── 2_reduced_with_root.pth  # Reduced model with root
+│   │   ├── 3_reduced_no_root.pth    # Reduced model (HLS-compatible)
+│   │   └── 4_qat_no_root.pth        # QAT model (HLS-compatible)
+│   ├── training_history/        # Training history JSON files
+│   ├── weights_float/           # Float model weights
+│   ├── weights_ptq_float/       # PTQ weights (INT8 + float scales)
+│   ├── weights_ptq_int8/        # PTQ integer-only parameters
+│   ├── weights_qat/             # QAT weights
+│   ├── test_vectors_float/      # Float HLS test vectors
+│   ├── test_vectors_ptq_float/  # PTQ float quant/dequant test vectors
+│   ├── test_vectors_ptq_int8/   # PTQ integer-only test vectors
+│   ├── test_vectors_qat/        # QAT test vectors
+│   ├── hls/                     # HLS build outputs
+│   ├── plots/                   # Training plots and visualizations
+│   └── subgraph/                # Extracted subgraph data
+├── docs/                        # Documentation
+│   ├── guides/                  # User guides
+│   │   ├── CLEAN_BUILD_GUIDE.md
+│   │   ├── QUICKSTART.md
+│   │   └── VISUALIZATION_GUIDE.md
+│   ├── specs/                   # Technical specifications
+│   │   ├── QUANTIZATION_SPEC.md
+│   │   ├── MODELS_AND_IMPLEMENTATIONS.md
+│   │   ├── HLS_VARIANTS_AND_TEST_VECTORS.md
+│   │   └── INTEGER_PTQ_PIPELINE.md
+│   ├── notes/                   # Development notes
+│   │   ├── CURRENT_STATUS.md
+│   │   ├── DIRECTORY_STRUCTURE.md
+│   │   ├── PTQ_ACCURACY_SUMMARY.md
+│   │   ├── PTQ_ROUNDING_ANALYSIS.md
+│   │   ├── QAT_TRAINING_NOTES.md
+│   │   ├── SAGECONV_ADJACENCY_FIX.md
+│   │   └── *.txt (various notes)
+│   └── deprecated/              # Old/obsolete documentation
 ├── data/                        # Cora dataset (auto-downloaded)
-├── outputs/                     # Exported weights and configs
 ├── configs/                     # Configuration files
-├── venv/                        # Python virtual environment
+│   └── model_config.yaml
+├── scripts/                     # Utility scripts
+│   ├── clean_build.py          # Clean build artifacts
+│   ├── verify_setup.py          # Setup verification
+│   ├── verify_both_versions.py  # Model version comparison
+│   └── deprecated/              # Old one-time scripts
 ├── requirements.txt             # Python dependencies
+├── run_pipeline.py              # Main pipeline orchestration script
 └── README.md                    # This file
 ```
 

@@ -18,7 +18,7 @@ cd simple-gnn
 source venv/bin/activate
 
 # 3. Verify setup
-python verify_setup.py
+python scripts/verify_setup.py
 ```
 
 ## Quick Run
@@ -135,7 +135,7 @@ make hls-cosim  # C/RTL cosimulation
 source venv/bin/activate
 
 # Verify installations
-python verify_setup.py
+python scripts/verify_setup.py
 ```
 
 ### CUDA/GPU Issues
@@ -199,7 +199,7 @@ On a typical CPU:
 
 - See `README.md` for detailed documentation
 - Check `build_instructions.txt` for the original plan
-- Run `python verify_setup.py` to diagnose setup issues
+- Run `python scripts/verify_setup.py` to diagnose setup issues
 
 ## Architecture Overview
 

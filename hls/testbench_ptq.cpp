@@ -231,7 +231,7 @@ int main() {
     cout << "========================================" << endl << endl;
 
     // Test vector directory (absolute paths from project root)
-    const char* test_dir = "/home/pelayo/work/simple-gnn/build/test_vectors_ptq";
+    const char* test_dir = "/home/pelayo/work/simple-gnn/build/test_vectors_ptq_float";
 
     // ========== Declare arrays ==========" 
     // Adjacency matrix (still float for precision)

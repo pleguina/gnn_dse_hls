@@ -17,24 +17,40 @@ def get_build_structure():
             'description': 'Trained model checkpoints',
             'patterns': ['*.pth', '*.pt'],
         },
+        'build/training_history': {
+            'description': 'Training history JSON files',
+            'patterns': ['*.json'],
+        },
         'build/plots': {
             'description': 'Training and analysis plots',
             'patterns': ['*.png', '*.jpg', '*.pdf', '*.json'],
         },
-        'build/quantized': {
-            'description': 'PTQ quantized weights',
+        'build/weights_float': {
+            'description': 'Float model weights',
             'patterns': ['*.txt', '*.json'],
         },
-        'build/quantized_qat': {
+        'build/weights_ptq_float': {
+            'description': 'PTQ float quant/dequant weights',
+            'patterns': ['*.txt', '*.json'],
+        },
+        'build/weights_ptq_int8': {
+            'description': 'PTQ integer-only parameters',
+            'patterns': ['*.txt', '*.json'],
+        },
+        'build/weights_qat': {
             'description': 'QAT quantized weights',
             'patterns': ['*.txt', '*.json'],
         },
-        'build/test_vectors': {
-            'description': 'PTQ test vectors',
+        'build/test_vectors_float': {
+            'description': 'Float HLS test vectors',
             'patterns': ['*.txt', '*.json'],
         },
-        'build/test_vectors_float': {
-            'description': 'FLOAT test vectors (no quantization)',
+        'build/test_vectors_ptq_float': {
+            'description': 'PTQ float quant/dequant test vectors',
+            'patterns': ['*.txt', '*.json'],
+        },
+        'build/test_vectors_ptq_int8': {
+            'description': 'PTQ integer-only test vectors',
             'patterns': ['*.txt', '*.json'],
         },
         'build/test_vectors_qat': {

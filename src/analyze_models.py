@@ -14,7 +14,7 @@ from model_qat import ReducedGraphSAGEQAT
 from torch_geometric.datasets import Planetoid
 from torch_geometric.transforms import NormalizeFeatures
 from torch_geometric.data import Data
-from quantization import quantize_tensor
+from quantization_ptq import quantize_tensor
 from config import get_config
 
 # Fix for PyTorch 2.6+ weights_only default change

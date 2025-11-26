@@ -1,0 +1,19 @@
+<AutoPilot:solution xmlns:AutoPilot="com.autoesl.autopilot.solution">
+    <name>
+        <value string="solution1"/>
+    </name>
+    <project>
+        <value string="graphsage_qat"/>
+    </project>
+    <flowTarget value="vivado"/>
+    <targetInfo>
+        <TargetInfo value="xcvu13p:-fsga2577:-1-e"/>
+    </targetInfo>
+    <libraryList>
+        <library value="xilinx/virtexuplus/virtexuplus" name="DefaultPlatform"/>
+    </libraryList>
+    <clockList>
+        <clock name="default" period="2.77" default="false"/>
+    </clockList>
+</AutoPilot:solution>
+

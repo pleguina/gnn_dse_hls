@@ -11,6 +11,7 @@ from torch_geometric.data import Data
 import os
 import sys
 import json
+import numpy as np
 
 # Fix for PyTorch 2.6+ weights_only default change
 torch.serialization.add_safe_globals([Data])
@@ -18,6 +19,45 @@ torch.serialization.add_safe_globals([Data])
 from model_base import GraphSAGE, ReducedGraphSAGE
 from visualization import plot_training_curves
 from config import get_config
+
+
+def export_float_weights(model, output_dir='../build/weights_float', suffix=''):
+    """
+    Export float32 model weights to text files.
+    This provides the starting point for integer quantization.
+    
+    Args:
+        model: Trained PyTorch model
+        output_dir: Directory to save weights
+        suffix: Optional suffix for filenames
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    model.eval()
+    
+    print(f"\nExporting float weights to {output_dir}/")
+    
+    for name, param in model.named_parameters():
+        if len(param.shape) == 0:  # Skip scalar parameters
+            continue
+        
+        # Get weight as numpy array
+        weight_np = param.data.cpu().numpy()
+        
+        # Create filename
+        filename = name.replace('.', '_') + suffix + '.txt'
+        
+        # Save as text file
+        np.savetxt(f'{output_dir}/{filename}', weight_np.flatten(), fmt='%.6f')
+        
+        # Save shape info
+        with open(f'{output_dir}/{filename}.shape', 'w') as f:
+            f.write(','.join(map(str, weight_np.shape)))
+        
+        print(f"  Exported {name}: shape={weight_np.shape}, range=[{weight_np.min():.6f}, {weight_np.max():.6f}]")
+    
+    print(f"✓ Float weights saved to {output_dir}/")
+    return output_dir
 
 
 def train(model, data, optimizer):
@@ -287,6 +327,10 @@ def train_reduced_model(epochs=None, lr=None, in_channels_reduced=None,
     # Plot training curves
     plot_path = f'../build/plots/reduced_model{suffix}_training.png'
     plot_training_curves(history, save_path=plot_path)
+
+    # Export float weights (for later quantization)
+    if not root_weight:  # Only for HLS-compatible no-root model
+        export_float_weights(model, output_dir='../build/weights_float', suffix=suffix)
 
     return model, data, history
 

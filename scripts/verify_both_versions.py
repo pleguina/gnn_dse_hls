@@ -94,7 +94,7 @@ def main():
     # Check HLS-compatible version (no root_weight)
     issues, ok = check_version(
         "HLS-COMPATIBLE VERSION (no root_weight)",
-        "build/quantized_no_root",
+        "build/weights_ptq_float",
         "build/models/reduced_graphsage_no_root_best.pth",
         should_have_root_weight=False
     )
@@ -168,7 +168,7 @@ def main():
         print("   • C headers: ✓ Exported")
         print("\n💡 For HLS implementation, use:")
         print("   - Model: build/models/reduced_graphsage_no_root_best.pth")
-        print("   - Quantized: build/quantized_no_root/")
+        print("   - Quantized: build/weights_ptq_float/")
         print("   - Header: build/hls/weights_no_root.h")
         print("\n✅ READY FOR HLS IMPLEMENTATION")
         return 0

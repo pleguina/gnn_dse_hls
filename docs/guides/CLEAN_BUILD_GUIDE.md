@@ -2,7 +2,7 @@
 
 ## Overview
 
-`clean_build.py` - Safely clean build artifacts while preserving directory structure.
+`scripts/clean_build.py` - Safely clean build artifacts while preserving directory structure.
 
 **Key Feature**: Removes generated files but **keeps all folders intact**.
 
@@ -10,16 +10,16 @@
 
 ```bash
 # Show current status (no changes made)
-./clean_build.py --status
+python scripts/clean_build.py --status
 
 # Preview what would be deleted (dry run)
-./clean_build.py --dry-run
+python scripts/clean_build.py --dry-run
 
 # Clean everything (with confirmation)
-./clean_build.py
+python scripts/clean_build.py
 
 # Clean without confirmation
-./clean_build.py --yes
+python scripts/clean_build.py --yes
 ```
 
 ## What Gets Cleaned
@@ -47,7 +47,7 @@ The script cleans these directories:
 See what's currently in the build folder:
 
 ```bash
-./clean_build.py --status
+python scripts/clean_build.py --status
 ```
 
 Output:
@@ -76,55 +76,55 @@ Total files in build/: 53
 See what **would** be deleted without actually deleting:
 
 ```bash
-./clean_build.py --dry-run
+python scripts/clean_build.py --dry-run
 ```
 
 or shorthand:
 ```bash
-./clean_build.py -n
+python scripts/clean_build.py -n
 ```
 
 ### 3. Clean Everything
 
 With confirmation prompt:
 ```bash
-./clean_build.py
+python scripts/clean_build.py
 ```
 
 Skip confirmation:
 ```bash
-./clean_build.py --yes
+python scripts/clean_build.py --yes
 # or
-./clean_build.py -y
+python scripts/clean_build.py -y
 ```
 
 ### 4. Clean Specific Folders Only
 
 Clean only models:
 ```bash
-./clean_build.py --only models
+python scripts/clean_build.py --only models
 ```
 
 Clean only models and plots:
 ```bash
-./clean_build.py --only models plots
+python scripts/clean_build.py --only models plots
 ```
 
 Clean only QAT-related folders:
 ```bash
-./clean_build.py --only quantized_qat test_vectors_qat
+python scripts/clean_build.py --only quantized_qat test_vectors_qat
 ```
 
 ### 5. Clean Everything Except Specific Folders
 
 Clean everything except plots:
 ```bash
-./clean_build.py --except plots
+python scripts/clean_build.py --except plots
 ```
 
 Clean everything except models and plots:
 ```bash
-./clean_build.py --except models plots
+python scripts/clean_build.py --except models plots
 ```
 
 ### 6. Common Workflows
@@ -132,31 +132,31 @@ Clean everything except models and plots:
 #### Before Retraining Models:
 ```bash
 # Clean old models but keep plots for comparison
-./clean_build.py --only models quantized quantized_qat test_vectors test_vectors_qat
+python scripts/clean_build.py --only models quantized quantized_qat test_vectors test_vectors_qat
 ```
 
 #### Fresh Start (Keep Directory Structure):
 ```bash
 # Clean everything
-./clean_build.py --yes
+python scripts/clean_build.py --yes
 ```
 
 #### Before Changing Model Size:
 ```bash
 # Clean everything to avoid confusion with old artifacts
-./clean_build.py --yes
+python scripts/clean_build.py --yes
 ```
 
 #### Keep Analysis, Clean Data:
 ```bash
 # Keep plots but clean models and test vectors
-./clean_build.py --except plots
+python scripts/clean_build.py --except plots
 ```
 
 ## Command-Line Options
 
 ```
-./clean_build.py [OPTIONS]
+python scripts/clean_build.py [OPTIONS]
 
 Options:
   -h, --help            Show help message
@@ -183,13 +183,13 @@ When using `--only` or `--except`, you can use partial names:
 
 ```bash
 # These all match 'build/models/':
-./clean_build.py --only models
-./clean_build.py --only model
-./clean_build.py --only build/models
+python scripts/clean_build.py --only models
+python scripts/clean_build.py --only model
+python scripts/clean_build.py --only build/models
 
 # These match QAT folders:
-./clean_build.py --only qat           # Matches both quantized_qat and test_vectors_qat
-./clean_build.py --only quantized_qat # Matches only quantized_qat
+python scripts/clean_build.py --only qat           # Matches both quantized_qat and test_vectors_qat
+python scripts/clean_build.py --only quantized_qat # Matches only quantized_qat
 ```
 
 ## Examples with Output
@@ -291,7 +291,7 @@ Cleaning build/models/
 
 ```bash
 # Clean old models and artifacts
-./clean_build.py --only models quantized quantized_qat test_vectors test_vectors_qat --yes
+python scripts/clean_build.py --only models quantized quantized_qat test_vectors test_vectors_qat --yes
 
 # Train new models
 cd src
@@ -304,7 +304,7 @@ python train_qat.py
 ```bash
 # You changed model size in configs/model_config.yaml
 # Clean old artifacts to avoid confusion
-./clean_build.py --yes
+python scripts/clean_build.py --yes
 
 # Train with new configuration
 cd src
@@ -315,7 +315,7 @@ python train_qat.py
 
 ```bash
 # Start fresh
-./clean_build.py --yes
+python scripts/clean_build.py --yes
 
 # Run full pipeline
 ./run_pipeline.py
@@ -366,5 +366,5 @@ python3 clean_build.py --status
 **Pro Tip**: Always run `--dry-run` first when trying new options!
 
 ```bash
-./clean_build.py --dry-run --only models plots
+python scripts/clean_build.py --dry-run --only models plots
 ```

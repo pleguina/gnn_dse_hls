@@ -17,7 +17,7 @@ np.random.seed(42)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from model_base import ReducedGraphSAGE
-from quantization import quantize_tensor
+from quantization_ptq import quantize_tensor
 from subgraph_extraction import extract_fixed_subgraph
 from torch_geometric.datasets import Planetoid
 from torch_geometric.transforms import NormalizeFeatures
@@ -280,7 +280,7 @@ if __name__ == '__main__':
         sys.exit(1)
 
     # Generate test vectors
-    output_dir = '../build/test_vectors_ptq'
+    output_dir = '../build/test_vectors_ptq_float'
 
     print("\n" + "="*60)
     print("Generating PTQ test vectors with quantized forward pass...")
