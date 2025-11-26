@@ -1,5 +1,5 @@
 # ==============================================================================
-# Run C Simulation for GraphSAGE FLOAT Reduced Model
+# Run HLS Synthesis for GraphSAGE FLOAT Reduced Model
 # ==============================================================================
 
 # Source the project setup
@@ -7,19 +7,20 @@ source setup_project_float.tcl
 
 puts ""
 puts "=========================================="
-puts "  Running C Simulation (FLOAT)"
+puts "  Running C Synthesis (FLOAT)"
 puts "=========================================="
 puts ""
 
-# Run C simulation
-csim_design -clean
+# Run C synthesis
+csynth_design
 
 puts ""
 puts "=========================================="
-puts "  C Simulation Complete"
+puts "  Synthesis Complete"
 puts "=========================================="
 puts ""
-puts "Check results above for PASS/FAIL status"
+puts "Check synthesis report:"
+puts "  ../build/hls/graphsage_float/solution1/syn/report/graphsage_network_csynth.rpt"
 puts ""
 
 exit
