@@ -27,19 +27,23 @@ def get_build_structure():
         },
         'build/weights_float': {
             'description': 'Float model weights',
-            'patterns': ['*.txt', '*.json'],
+            'patterns': ['*.txt', '*.txt.shape', '*.json'],
         },
         'build/weights_ptq_float': {
-            'description': 'PTQ float quant/dequant weights',
-            'patterns': ['*.txt', '*.json'],
+            'description': 'PTQ float quant/dequant weights (no root)',
+            'patterns': ['*.txt', '*.txt.shape', '*.json'],
+        },
+        'build/weights_ptq_float_with_root': {
+            'description': 'PTQ float quant/dequant weights (with root)',
+            'patterns': ['*.txt', '*.txt.shape', '*.json'],
         },
         'build/weights_ptq_int8': {
             'description': 'PTQ integer-only parameters',
-            'patterns': ['*.txt', '*.json'],
+            'patterns': ['*.txt', '*.txt.shape', '*.json'],
         },
         'build/weights_qat': {
             'description': 'QAT quantized weights',
-            'patterns': ['*.txt', '*.json'],
+            'patterns': ['*.txt', '*.txt.shape', '*.json'],
         },
         'build/test_vectors_float': {
             'description': 'Float HLS test vectors',

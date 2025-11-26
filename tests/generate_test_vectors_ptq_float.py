@@ -2,12 +2,17 @@
 Generate PTQ test vectors for HLS validation using QUANTIZED forward pass.
 Unlike generate_test_vectors.py which runs float model and quantizes output,
 this does true quantized inference matching HLS PTQ implementation.
+
+Options:
+  --hw-round: Use hardware-style rounding (round half up) instead of Python's
+              banker's rounding. This makes PTQ-float match INT8-only better.
 """
 
 import torch
 import numpy as np
 import os
 import sys
+import argparse
 
 # Set random seed for reproducibility
 torch.manual_seed(42)
@@ -22,6 +27,42 @@ from subgraph_extraction import extract_fixed_subgraph
 from torch_geometric.datasets import Planetoid
 from torch_geometric.transforms import NormalizeFeatures
 
+# Global flag for rounding mode
+USE_HW_ROUND = False
+
+
+def hw_round(x):
+    """Hardware-style rounding: round half up (for positive), round half away from zero."""
+    if isinstance(x, (torch.Tensor, np.ndarray)):
+        # Vectorized version
+        if isinstance(x, torch.Tensor):
+            return torch.where(x >= 0, 
+                             torch.floor(x + 0.5), 
+                             torch.ceil(x - 0.5))
+        else:
+            return np.where(x >= 0, 
+                          np.floor(x + 0.5), 
+                          np.ceil(x - 0.5))
+    else:
+        # Scalar version
+        if x >= 0:
+            return int(x + 0.5)
+        else:
+            return -int(-x + 0.5)
+
+
+def smart_round(x):
+    """Round using either Python round or HW round based on global flag."""
+    if USE_HW_ROUND:
+        return hw_round(x)
+    else:
+        if isinstance(x, torch.Tensor):
+            return torch.round(x)
+        elif isinstance(x, np.ndarray):
+            return np.round(x)
+        else:
+            return round(x)
+
 
 def quantized_aggregate(x_int8, adj_matrix, scale_in, scale_hidden):
     """Perform quantized aggregation like HLS"""
@@ -32,8 +73,8 @@ def quantized_aggregate(x_int8, adj_matrix, scale_in, scale_hidden):
     adj_tensor = torch.from_numpy(adj_matrix).float()
     agg_float = torch.matmul(adj_tensor, x_float)
     
-    # Quantize to hidden scale
-    agg_int8 = torch.round(agg_float / scale_hidden).clamp(-128, 127).to(torch.int8)
+    # Quantize to hidden scale using appropriate rounding
+    agg_int8 = smart_round(agg_float / scale_hidden).clamp(-128, 127).to(torch.int8)
     
     return agg_int8
 
@@ -45,7 +86,7 @@ def quantized_linear(x_int8, weight_int8, bias_int32, scale_in, scale_w, scale_o
     
     # Requantize: acc_int32 * (scale_in * scale_w) / scale_out
     scale_factor = (scale_in * scale_w) / scale_out
-    out_int8 = torch.round(acc_int32.float() * scale_factor).clamp(-128, 127).to(torch.int8)
+    out_int8 = smart_round(acc_int32.float() * scale_factor).clamp(-128, 127).to(torch.int8)
     
     return out_int8
 
@@ -179,8 +220,12 @@ def generate_test_vectors_for_network(model, subgraph_data, output_dir):
     bias1 = conv1.lin_l.bias.data if conv1.lin_l.bias is not None else torch.zeros(weights1.shape[0])
 
     # Quantize layer 1
+    # NOTE: Layer 1 linear operates on aggregated activations at scale_hidden
+    # Aggregation: scale_in -> scale_hidden
+    # Linear input is at scale_hidden, so bias must be in (scale_hidden * scale_w1) domain
+    scale_hidden = 0.1
     weights1_quant, scale_w1, _ = quantize_tensor(weights1, num_bits=8)
-    bias1_quant = (bias1 / (scale_in * scale_w1)).to(torch.int32)
+    bias1_quant = (bias1 / (scale_hidden * scale_w1)).to(torch.int32)
 
     save_int_matrix(weights1_quant.numpy(), f'{output_dir}/weights_layer1.txt')
     save_int_matrix(bias1_quant.numpy(), f'{output_dir}/bias_layer1.txt')
@@ -191,8 +236,9 @@ def generate_test_vectors_for_network(model, subgraph_data, output_dir):
     bias2 = conv2.lin_l.bias.data if conv2.lin_l.bias is not None else torch.zeros(weights2.shape[0])
 
     # Quantize layer 2
+    # NOTE: Layer 2 linear also operates on scale_hidden activations
+    # (Layer 2 aggregation: scale_hidden -> scale_hidden)
     weights2_quant, scale_w2, _ = quantize_tensor(weights2, num_bits=8)
-    scale_hidden = 0.1  # Approximate scale for hidden layer
     bias2_quant = (bias2 / (scale_hidden * scale_w2)).to(torch.int32)
 
     save_int_matrix(weights2_quant.numpy(), f'{output_dir}/weights_layer2.txt')
@@ -245,9 +291,22 @@ def generate_test_vectors_for_network(model, subgraph_data, output_dir):
     print(f"  Output shape: {output_quant.shape}")
 
 
-if __name__ == '__main__':
+def main():
+    global USE_HW_ROUND
+    
+    parser = argparse.ArgumentParser(description='Generate PTQ test vectors')
+    parser.add_argument('--hw-round', action='store_true',
+                       help='Use hardware-style rounding (round half up) instead of Python banker\'s rounding')
+    args = parser.parse_args()
+    
+    # Set global rounding mode
+    USE_HW_ROUND = args.hw_round
+    
+    rounding_mode = "HW-ROUND (round half up)" if USE_HW_ROUND else "Python round (banker's rounding)"
+    
     print("="*60)
     print("Generating PTQ Test Vectors (Quantized Forward Pass)")
+    print(f"Rounding mode: {rounding_mode}")
     print("="*60)
 
     # Load Cora dataset
@@ -291,4 +350,8 @@ if __name__ == '__main__':
     print("PTQ test vector generation complete!")
     print("="*60)
     print(f"\nPTQ test vectors saved to: {output_dir}/")
-    print("\nNow update testbench_ptq.cpp to use this directory.")
+    print(f"Rounding mode used: {rounding_mode}")
+
+
+if __name__ == '__main__':
+    main()

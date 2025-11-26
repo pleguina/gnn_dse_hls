@@ -1,0 +1,548 @@
+TITLE: Next Steps To Remove Floating Point From HLS PTQ GraphSAGE Implementation
+
+GOAL
+
+Starting from the current PTQ setup (INT8 weights, INT8 activations, float scales, float adjacency), the goal is:
+
+Keep the same trained model and PTQ scheme (symmetric INT8).
+
+Remove all floating-point operations from the HLS data path.
+
+Represent everything in integer / fixed-point (including adjacency and rescaling).
+
+Make the HLS implementation mathematically equivalent to the PTQ model.
+
+SECTION 1 – PTQ MODEL SIDE: WHAT TO KEEP AND WHAT TO ADJUST
+1.1. Architecture constraints for HLS
+
+To match the current HLS GraphSAGE network:
+
+Use ReducedGraphSAGE with:
+
+root_weight = False
+
+project = False inside SAGEConv (already done)
+
+normalize = False
+
+aggr = "mean" (standard SAGEConv)
+
+That means:
+
+Each layer does: h_agg = mean(neighbors); h = W_l * h_agg + b_l; (no W_r * x_i term).
+
+This matches the HLS two-layer pipeline you implemented.
+
+If you want HLS to match the PTQ model exactly, you MUST ensure the model you quantize uses root_weight=False. Otherwise there is a W_r * x_i term that HLS doesn’t implement.
+
+1.2. PTQ weight and activation quantization
+
+You can keep your current PTQ logic conceptually:
+
+Weights:
+
+Symmetric INT8, per-tensor for now:
+
+W_float → W_q ∈ int8
+
+scale_w (float)
+
+Activations:
+
+Symmetric INT8, per-layer:
+
+x_float → x_q ∈ int8
+
+scale_x (float)
+
+You do, however, need to define and save per-layer activation scales explicitly:
+
+For each layer, decide (during calibration) the following:
+
+scale_in – scale for input activations to layer 1.
+
+scale_hidden – scale for hidden activations (output of layer 1).
+
+scale_out – scale for final output activations (layer 2 output).
+
+This can be done by:
+
+Running the trained float model on a calibration dataset,
+
+Collecting min/max for each layer output,
+
+Setting symmetric scales scale = max(|min|, |max|) / 127.
+
+You must store those scales in a JSON or similar file:
+
+scale_in
+
+scale_hidden
+
+scale_out
+
+scale_w1
+
+scale_w2
+
+These will be baked into integer constants for HLS later.
+
+1.3. Bias handling
+
+Currently, your HLS template assumes:
+
+acc is in units of (scale_act * scale_w)
+
+Bias is added directly to acc as INT32:
+
+This means bias must already be in accumulator domain.
+
+So, from the PTQ side, you should:
+
+Keep biases in float in the PyTorch model (normal training).
+
+After PTQ and after you decide the activation and weight scales, convert them to INT32:
+
+For layer 1:
+
+b1_float is the float bias vector of shape [hidden_dim].
+
+scale_in_agg1 is the activation scale entering the linear (for layer 1). In your current design, you quantize the aggregated output to scale_hidden, so:
+
+scale_act1 = scale_hidden
+
+scale_w1 is the weight scale for W1.
+
+Compute:
+
+b1_int32[o] = round(b1_float[o] / (scale_act1 * scale_w1))
+
+This gives you an INT32 bias in the same domain as the accumulator:
+
+acc ≈ (x_q * W_q) * (scale_act1 * scale_w1) + b1_float
+≈ (acc_int32 * scale_act1 * scale_w1)
+
+Layer 2 is analogous:
+
+b2_int32[o] = round(b2_float[o] / (scale_hidden * scale_w2))
+
+Then:
+
+In the generated HLS header, declare biases as int32_t arrays.
+
+In the HLS linear function, you add bias[o] directly to acc and then requantize.
+
+NO CHANGE is needed in training; this conversion is done post-training, after PTQ.
+
+SECTION 2 – HLS SIDE: HOW TO REMOVE FLOATS
+
+Currently the HLS code still uses float here:
+
+dequantize(features[j][f], scale_in) → multiply int8 by float
+
+quantize(sum, scale_out) → divide float by float
+
+requantize(acc, in_scale, out_scale) → multiply int32 by float and round
+
+We want to convert these to pure integer operations by pushing all floats into precomputed fixed-point constants.
+
+2.1. Integer-only linear layer (no floats)
+
+Your linear layer:
+
+acc = Σ (x_q * w_q) + bias_int32
+y_q = requantize(acc, in_scale = scale_act * scale_w, out_scale)
+
+We define:
+
+eff_scale = (scale_act * scale_w) / scale_out
+
+In float form you do:
+
+y_float ≈ acc * (scale_act * scale_w)
+y_q ≈ round(y_float / scale_out)
+≈ round(acc * eff_scale)
+
+To avoid floats:
+
+Step L1 – choose fixed-point precision
+
+Pick a number of fractional bits M for your scale factor. For example:
+
+M = 16 or M = 24 (you can tune this later).
+
+Step L2 – precompute fixed-point scale factor
+
+For each linear layer, compute offline (in Python):
+
+eff_scale = (scale_act * scale_w) / scale_out
+
+Then:
+
+eff_scale_fp = round(eff_scale * 2^M)
+
+Store eff_scale_fp as an int32 in the header.
+
+Step L3 – integer requantization in HLS
+
+Replace requantize(acc, in_scale, out_scale) with:
+
+tmp = acc * eff_scale_fp // 32 x 32 → 64-bit if needed
+tmp_rounded = tmp + (1 << (M - 1)) // for rounding
+y_int = tmp_rounded >> M
+clamp y_int to [-128, 127]
+y_q = (int8_t)y_int
+
+In code:
+
+No float.
+
+Only integer multiply + shift + clamp.
+
+You will have:
+
+eff_scale_fp_layer1
+
+eff_scale_fp_layer2
+
+computed from the PTQ scales and stored in the weights header.
+
+2.2. Integer-only ReLU
+
+With symmetric quantization, zero_point = 0, ReLU is trivial in int8:
+
+if (q < 0) q = 0;
+
+No change needed except to ensure type is int8 (or a wider temp type).
+
+2.3. Integer-only aggregation (removing float adjacency)
+
+Currently:
+
+sum += adj[i][j] * dequantize(features[j][f], scale_in)
+agg_q = quantize(sum, scale_out)
+
+Rewrite math:
+
+Let q_j be INT8 input activation, scale_in its scale.
+
+Let adjacency matrix be A[i][j] in float.
+
+Then:
+
+x_j ≈ scale_in * q_j
+sum = Σ A[i,j] * x_j ≈ Σ A[i,j] * (scale_in * q_j)
+= scale_in * Σ A[i,j] * q_j
+
+agg_q = round(sum / scale_out)
+≈ round( (scale_in / scale_out) * Σ A[i,j] * q_j )
+
+We want integer only. We must approximate both A[i,j] and (scale_in / scale_out) in fixed-point.
+
+Step A1 – normalize adjacency in Python (float)
+
+Match exactly what PyG’s SAGEConv(aggr='mean') does:
+
+For each node i:
+
+Include self-loop if necessary.
+
+Compute degree(i).
+
+Set A[i][j] = 1 / degree(i) if j ∈ neighbors(i), else 0.
+
+This is done at export time in Python, not in HLS.
+
+Step A2 – quantize adjacency to fixed-point integer
+
+Choose a fixed-point scale K for adjacency, for example:
+
+K = 2^12 = 4096 or K = 2^10 = 1024.
+
+Define:
+
+A_fp[i][j] = round(A[i][j] * K)
+
+and store A_fp as int16_t (or int32_t if needed).
+
+Now:
+
+A[i][j] ≈ A_fp[i][j] / K
+
+Step A3 – write aggregation in integer-only form
+
+Plug A_fp into the formula:
+
+sum ≈ scale_in * Σ (A_fp[i][j] / K) * q_j
+= (scale_in / K) * Σ A_fp[i][j] * q_j
+
+Then quantize:
+
+agg_q ≈ round( (scale_in / (K * scale_out)) * Σ A_fp[i][j] * q_j )
+
+Define:
+
+beta = scale_in / (K * scale_out)
+
+As before, represent this as fixed point:
+
+beta_fp = round(beta * 2^M)
+
+Then in HLS:
+
+tmp = 0; // int32 accumulator
+for j:
+tmp += (int32_t)A_fp[i][j] * (int32_t)q_j; // all int
+
+// tmp is Σ A_fp[i][j] * q_j
+
+tmp_scaled = tmp * beta_fp; // int64
+tmp_rounded = tmp_scaled + (1 << (M - 1));
+q_agg_int = tmp_rounded >> M; // back to int32
+clamp q_agg_int to [-128, 127]
+q_agg = (int8_t)q_agg_int;
+
+No floats are used.
+
+Step A4 – precompute beta_fp offline
+
+For each aggregation scale pair (scale_in, scale_out), precompute:
+
+beta = scale_in / (K * scale_out)
+beta_fp = round(beta * 2^M)
+
+Store beta_fp and K (or just beta_fp and shift amount) in the header.
+
+You will typically have:
+
+For aggregation before layer 1:
+
+scale_in (input activations)
+
+scale_agg1_out = scale_hidden
+
+beta_fp_agg1
+
+For aggregation before layer 2:
+
+scale_hidden as input
+
+scale_agg2_out = scale_hidden again (if you keep same scale)
+
+beta_fp_agg2
+
+SECTION 3 – COMPLETE OPTIMAL FLOW (MODEL → PTQ → INTEGER HLS)
+
+This is the recommended pipeline, step by step.
+
+Step 0 – Train the float model
+
+Train ReducedGraphSAGE on Cora (or your dataset) with:
+
+root_weight=False
+
+SAGEConv(..., aggr="mean", normalize=False, project=False)
+
+Step 1 – Decide the INT8 scheme
+
+Symmetric INT8 for weights and activations.
+
+Per-layer activation scales:
+
+scale_in
+
+scale_hidden
+
+scale_out
+
+Per-layer weight scales:
+
+scale_w1
+
+scale_w2
+
+Step 2 – Collect activation stats (calibration)
+
+Run the trained float model on a calibration set.
+
+For each layer, record min/max of:
+
+Input to layer 1 → choose scale_in.
+
+Output of layer 1 (after ReLU) → choose scale_hidden.
+
+Output of layer 2 → choose scale_out.
+
+Use symmetric scale:
+
+scale = max(|min|, |max|) / 127.
+
+Step 3 – Quantize weights
+
+For each weight tensor (W1, W2):
+
+Find max absolute value.
+
+Set scale_w = max_abs / 127.
+
+Compute W_q = round(W_float / scale_w) and clamp to [-128, 127].
+
+Save:
+
+W1_q, W2_q (int8 arrays).
+
+scale_w1, scale_w2.
+
+Step 4 – Convert biases to accumulator domain
+
+Using scale_act1 = scale_hidden, scale_act2 = scale_hidden:
+
+b1_int32[o] = round(b1_float[o] / (scale_hidden * scale_w1))
+
+b2_int32[o] = round(b2_float[o] / (scale_hidden * scale_w2))
+
+Save:
+
+b1_int32, b2_int32 as int32 arrays.
+
+Step 5 – Prepare adjacency in fixed-point
+
+In Python:
+
+Build adjacency A[i][j] matching PyG’s mean aggregation:
+
+handle self-loops; divide by degree(i).
+
+Choose K = 2^k (e.g. 4096).
+
+Compute A_fp[i][j] = round(A[i][j] * K) (int16 or int32).
+
+Save A_fp as integer matrix and remember K.
+
+Step 6 – Precompute all fixed-point scale factors
+
+Choose one M (fractional bits) for all scale factors (e.g. M = 20).
+
+6.1. For linear layers:
+
+Layer 1:
+
+eff_scale1 = (scale_hidden * scale_w1) / scale_hidden
+
+If you keep same activation scale in and out (scale_hidden), eff_scale1 ≈ scale_w1.
+
+eff_scale1_fp = round(eff_scale1 * 2^M)
+
+Layer 2:
+
+eff_scale2 = (scale_hidden * scale_w2) / scale_out
+
+eff_scale2_fp = round(eff_scale2 * 2^M)
+
+6.2. For aggregation:
+
+For aggregation before layer 1:
+
+beta1 = scale_in / (K * scale_hidden)
+
+beta1_fp = round(beta1 * 2^M)
+
+For aggregation before layer 2 (hidden → hidden):
+
+beta2 = scale_hidden / (K * scale_hidden) = 1 / K
+
+beta2_fp = round(beta2 * 2^M) (or just handle as a pure shift if simple).
+
+Save all:
+
+eff_scale1_fp, eff_scale2_fp
+
+beta1_fp, beta2_fp
+
+M, K
+
+Step 7 – Generate HLS header with integer-only parameters
+
+Arrays:
+
+W1_q as int8_t W1[HIDDEN_FEAT][IN_FEAT];
+
+W2_q as int8_t W2[OUT_FEAT][HIDDEN_FEAT];
+
+b1_int32 as int32_t B1[HIDDEN_FEAT];
+
+b2_int32 as int32_t B2[OUT_FEAT];
+
+A_fp as int16_t A[NUM_NODES][NUM_NODES];
+
+Constants:
+
+int32_t EFF_SCALE1_FP;
+
+int32_t EFF_SCALE2_FP;
+
+int32_t BETA1_FP;
+
+int32_t BETA2_FP;
+
+int K;
+
+int M;
+
+Step 8 – Rewrite HLS functions without floats
+
+8.1. Aggregation:
+
+Replace dequantize() and quantize() and float adjacency by:
+
+tmp = 0
+for j:
+tmp += (int32)A_fp[i][j] * (int32)q_j
+
+tmp_scaled = tmp * beta_fp
+tmp_rounded = tmp_scaled + (1 << (M - 1))
+q_agg_int = tmp_rounded >> M
+clamp q_agg_int to [-128, 127]
+q_agg = (int8_t)q_agg_int
+
+8.2. Linear:
+
+Replace requantize(acc, scale_in, scale_out) by:
+
+tmp_scaled = acc * eff_scale_fp
+tmp_rounded = tmp_scaled + (1 << (M - 1))
+q_out_int = tmp_rounded >> M
+clamp to [-128, 127]
+q_out = (int8_t)q_out_int
+
+8.3. ReLU:
+
+Keep if (x < 0) x = 0; as is.
+
+At this point, all multiplications and additions are integer, all scaling is integer multiply + shift, no floats in the HLS datapath.
+
+SECTION 4 – VALIDATION STRATEGY
+
+Before trusting the HLS integer-only implementation, you should:
+
+Implement a Python “integer emulator” using the same fixed-point parameters (K, M, A_fp, eff_scale_fp, beta_fp, etc.).
+
+For a sample subgraph:
+
+Take float features and adjacency.
+
+Run the float PyTorch model.
+
+Run the PTQ integer emulator.
+
+Run the HLS C-simulation.
+
+Compare outputs:
+
+HLS vs Python integer emulator: should match bit-exactly.
+
+Float vs integer: will differ by quantization error, but should be close enough for your task.
+
+Once HLS and Python integer emulator match, you have a clean, float-free PTQ implementation.
+
+END OF FILE

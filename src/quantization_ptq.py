@@ -232,8 +232,11 @@ if __name__ == '__main__':
     print("\nQuantizing model to INT8...")
     quantized_weights, quant_params = quantize_model_weights(model, num_bits=8)
 
-    # Save quantized weights with suffix
-    output_dir = f'../build/quantized{suffix}'
+    # Save quantized weights with new naming convention
+    if root_weight:
+        output_dir = '../build/weights_ptq_float_with_root'
+    else:
+        output_dir = '../build/weights_ptq_float'
     save_quantized_weights(quantized_weights, quant_params, output_dir=output_dir)
 
     # Prepare model dimensions

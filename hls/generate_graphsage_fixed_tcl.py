@@ -1,131 +1,118 @@
 #!/usr/bin/env python3
 """
-Generate Vitis HLS TCL scripts for Fixed-Point GraphSAGE project.
-Creates project setup, C simulation, and synthesis scripts.
+Generate TCL files for GraphSAGE HLS Fixed-Point implementation.
+Uses configurable Q-format fixed-point arithmetic.
 """
 
 import os
-from jinja2 import Template
+from pathlib import Path
+from jinja2 import Environment, FileSystemLoader
 
-# Configuration
+# Absolute paths
+REPO_ROOT = Path(__file__).parent.parent.absolute()
+HLS_DIR = REPO_ROOT / "hls"
+BUILD_HLS_DIR = REPO_ROOT / "build" / "hls"
+PROJECT_DIR = BUILD_HLS_DIR / "graphsage_fixed"
+TEMPLATE_DIR = HLS_DIR / "tcl_example"
+
+# Fixed-point bit widths
+DATA_W = 16
+DATA_I = 8
+WEIGHT_W = 16
+WEIGHT_I = 4
+ACC_W = 32
+ACC_I = 16
+SCALE_W = 16
+SCALE_I = 2
+
+# Configuration for graphsage_fixed
 config = {
     "module_name": "graphsage_fixed",
     "top": "graphsage_network_fixed",
-    "clock_period": 2.77,  # ns (361 MHz - same as float)
-    "device": "xcvu13p-fsga2577-1-e",
-    "src": ["graphsage_layer_fixed.cpp", "graphsage_layer_fixed.h"],  # Need .cpp for synthesis
-    "tb": ["testbench_fixed.cpp"],
-    "project_dir": "/home/pelayo/work/simple-gnn/build/hls/graphsage_fixed",
-    "hls_dir": "/home/pelayo/work/simple-gnn/hls",
+    "part": "xcvu13p-fsga2577-1-e",
+    "clock_period": 2.77,
+    "version": "1.0",
+    "vendor": "GNN",
     
-    # Fixed-point bit widths (configurable)
-    "data_w": 16,
-    "data_i": 8,
-    "weight_w": 16,
-    "weight_i": 4,
-    "acc_w": 32,
-    "acc_i": 16,
-    "scale_w": 16,
-    "scale_i": 2,
+    # Absolute paths to source files
+    "src": [
+        str(HLS_DIR / "graphsage_layer_fixed.cpp"),
+        str(HLS_DIR / "graphsage_layer_fixed.h"),
+    ],
+    
+    # Absolute paths to testbench files
+    "tb": [
+        str(HLS_DIR / "testbench_fixed.cpp"),
+    ],
+    
+    # Absolute paths to include directories
+    "includes": [
+        str(HLS_DIR),
+    ],
+    
+    # Additional compiler flags for fixed-point configuration
+    "cflags": [
+        f"-DDATA_W={DATA_W}",
+        f"-DDATA_I={DATA_I}",
+        f"-DWEIGHT_W={WEIGHT_W}",
+        f"-DWEIGHT_I={WEIGHT_I}",
+        f"-DACC_W={ACC_W}",
+        f"-DACC_I={ACC_I}",
+        f"-DSCALE_W={SCALE_W}",
+        f"-DSCALE_I={SCALE_I}",
+    ],
+    
+    # Absolute paths
+    "project_dir": str(PROJECT_DIR),
+    "project_root": str(REPO_ROOT),
+    "logs_dir": str(PROJECT_DIR / "logs"),
+    
+    # TCL options
+    "csim_opts": "-clean",
+    "csynth_opts": "",
+    "tb_args": "",
 }
 
-# Project TCL template
-project_tcl = Template("""
-# Vitis HLS Project Setup - {{ module_name }}
-# Fixed-Point GraphSAGE Implementation
-
-# Create and open project
-open_project {{ module_name }}
-
-# Add source files
-{% for src_file in src %}
-add_files {{ hls_dir }}/{{ src_file }} -cflags "-std=c++11 -DDATA_W={{ data_w }} -DDATA_I={{ data_i }} -DWEIGHT_W={{ weight_w }} -DWEIGHT_I={{ weight_i }} -DACC_W={{ acc_w }} -DACC_I={{ acc_i }} -DSCALE_W={{ scale_w }} -DSCALE_I={{ scale_i }}"
-{% endfor %}
-
-# Add testbench files
-{% for tb_file in tb %}
-add_files -tb {{ hls_dir }}/{{ tb_file }} -cflags "-std=c++11 -DDATA_W={{ data_w }} -DDATA_I={{ data_i }} -DWEIGHT_W={{ weight_w }} -DWEIGHT_I={{ weight_i }} -DACC_W={{ acc_w }} -DACC_I={{ acc_i }} -DSCALE_W={{ scale_w }} -DSCALE_I={{ scale_i }}"
-{% endfor %}
-
-# Set top function
-set_top {{ top }}
-
-# Create solution
-open_solution "solution1" -flow_target vivado
-
-# Set target device
-set_part {{ device }}
-
-# Set clock period
-config_schedule -enable_dsp_full_reg=false
-create_clock -period {{ clock_period }} -name default
-
-exit
-""")
-
-# C Simulation TCL template
-csim_tcl = Template("""
-# Vitis HLS C Simulation - {{ module_name }}
-
-open_project {{ module_name }}
-open_solution "solution1"
-
-# Run C simulation
-csim_design -clean
-
-close_project
-exit
-""")
-
-# Synthesis TCL template
-synth_tcl = Template("""
-# Vitis HLS Synthesis - {{ module_name }}
-
-open_project {{ module_name }}
-open_solution "solution1"
-
-# Run C synthesis
-csynth_design
-
-# Export design (optional)
-# export_design -format ip_catalog
-
-close_project
-exit
-""")
-
-def generate_tcl_scripts():
-    """Generate all TCL scripts."""
+def main():
+    # Create project directory
+    PROJECT_DIR.mkdir(parents=True, exist_ok=True)
+    (PROJECT_DIR / "logs").mkdir(parents=True, exist_ok=True)
     
-    # Create output directory
-    os.makedirs(config["project_dir"], exist_ok=True)
+    # Setup Jinja environment
+    env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
     
     # Generate project.tcl
-    with open(f"{config['project_dir']}/project.tcl", "w") as f:
-        f.write(project_tcl.render(**config))
-    print(f"Generated {config['project_dir']}/project.tcl")
-    
-    # Generate csim.tcl
-    with open(f"{config['project_dir']}/csim.tcl", "w") as f:
-        f.write(csim_tcl.render(**config))
-    print(f"Generated {config['project_dir']}/csim.tcl")
+    template = env.get_template("project.tcl.j2")
+    output_path = PROJECT_DIR / "project.tcl"
+    with open(output_path, "w") as f:
+        f.write(template.render(**config))
+    print(f"✅ Generated: {output_path}")
     
     # Generate synth.tcl
-    with open(f"{config['project_dir']}/synth.tcl", "w") as f:
-        f.write(synth_tcl.render(**config))
-    print(f"Generated {config['project_dir']}/synth.tcl")
+    template = env.get_template("synth.tcl.j2")
+    output_path = PROJECT_DIR / "synth.tcl"
+    with open(output_path, "w") as f:
+        f.write(template.render(**config))
+    print(f"✅ Generated: {output_path}")
     
+    # Generate csim.tcl
+    template = env.get_template("csim.tcl.j2")
+    output_path = PROJECT_DIR / "csim.tcl"
+    with open(output_path, "w") as f:
+        f.write(template.render(**config))
+    print(f"✅ Generated: {output_path}")
+
+    print(f"\n✅ All TCL files generated in: {PROJECT_DIR}")
     print(f"\nFixed-Point Configuration:")
-    print(f"  Data:   Q{config['data_i']}.{config['data_w']-config['data_i']}")
-    print(f"  Weight: Q{config['weight_i']}.{config['weight_w']-config['weight_i']}")
-    print(f"  Acc:    Q{config['acc_i']}.{config['acc_w']-config['acc_i']}")
-    print(f"  Scale:  Q{config['scale_i']}.{config['scale_w']-config['scale_i']}")
-    
+    print(f"  Data:   Q{DATA_I}.{DATA_W-DATA_I}")
+    print(f"  Weight: Q{WEIGHT_I}.{WEIGHT_W-WEIGHT_I}")
+    print(f"  Acc:    Q{ACC_I}.{ACC_W-ACC_I}")
+    print(f"  Scale:  Q{SCALE_I}.{SCALE_W-SCALE_I}")
     print(f"\nTo run:")
-    print(f"  cd {config['project_dir']}")
+    print(f"  cd {PROJECT_DIR}")
     print(f"  vitis_hls -f project.tcl  # Create project")
     print(f"  vitis_hls -f csim.tcl     # Run C simulation")
     print(f"  vitis_hls -f synth.tcl    # Run synthesis")
 
 if __name__ == "__main__":
-    generate_tcl_scripts()
+    main()

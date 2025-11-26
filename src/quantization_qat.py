@@ -302,7 +302,7 @@ def main():
             print(f"  {key}: {value}")
 
     # Create output directories from config
-    weights_dir = cfg.get('quantization.output_dir_qat', '../build/quantized_qat')
+    weights_dir = cfg.get('quantization.output_dir_qat', '../build/weights_qat')
     vectors_dir = cfg.get('quantization.test_vectors_dir_qat', '../build/test_vectors_qat')
     test_nodes = cfg.get('quantization.test_subgraph_nodes', 8)
 

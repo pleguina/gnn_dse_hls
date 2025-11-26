@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-Generate TCL files for GraphSAGE HLS PTQ (Post-Training Quantization) implementation.
-This is the float reference with quantized INT8 weights.
+Generate TCL files for GraphSAGE HLS INT8 (Pure Integer) implementation.
+This is the hardware-optimized version with integer-only arithmetic.
+
+Key features:
+- M=24 fractional bits for exact match with PTQ-Float (0 LSB error)
+- Pure INT8 weights and activations
+- INT32 accumulators
+- INT16 adjacency matrix (scaled by K=4096)
 """
 
 import os
@@ -12,13 +18,13 @@ from jinja2 import Environment, FileSystemLoader
 REPO_ROOT = Path(__file__).parent.parent.absolute()
 HLS_DIR = REPO_ROOT / "hls"
 BUILD_HLS_DIR = REPO_ROOT / "build" / "hls"
-PROJECT_DIR = BUILD_HLS_DIR / "graphsage_ptq"
+PROJECT_DIR = BUILD_HLS_DIR / "graphsage_int8"
 TEMPLATE_DIR = HLS_DIR / "tcl_example"
 
-# Configuration for graphsage_ptq
+# Configuration for graphsage_int8
 config = {
-    "module_name": "graphsage_ptq",
-    "top": "graphsage_network_ptq",
+    "module_name": "graphsage_int8",
+    "top": "graphsage_int8",
     "part": "xcvu13p-fsga2577-1-e",
     "clock_period": 2.77,
     "version": "1.0",
@@ -26,13 +32,13 @@ config = {
     
     # Absolute paths to source files
     "src": [
-        str(HLS_DIR / "graphsage_layer_ptq.cpp"),
-        str(HLS_DIR / "graphsage_layer_ptq.h"),
+        str(HLS_DIR / "graphsage_layer_int8.cpp"),
+        str(HLS_DIR / "graphsage_layer_int8.h"),
     ],
     
     # Absolute paths to testbench files
     "tb": [
-        str(HLS_DIR / "testbench_ptq.cpp"),
+        str(HLS_DIR / "testbench_int8.cpp"),
     ],
     
     # Absolute paths to include directories
@@ -40,8 +46,8 @@ config = {
         str(HLS_DIR),
     ],
     
-    # Additional compiler flags
-    "cflags": [],
+    # Additional compiler flags (M_BITS=24 for exact match with PTQ-Float)
+    "cflags": ["-DM_BITS=24"],
     
     # Absolute paths
     "project_dir": str(PROJECT_DIR),

@@ -8,19 +8,31 @@ This script converts the existing PTQ parameters to integer-only format:
 
 Input: build/weights_ptq_float/ (existing PTQ with float scales)
 Output: build/weights_ptq_int8/ (integer-only parameters)
+
+Usage:
+  python prepare_ptq_int8_parameters.py          # Default M=20
+  python prepare_ptq_int8_parameters.py --m24    # Use M=24 (recommended for exact match)
 """
 
 import json
 import numpy as np
 import torch
+import argparse
 from pathlib import Path
 
 # ============================================================================
 # Configuration
 # ============================================================================
 
+parser = argparse.ArgumentParser(description='Generate INT8-only PTQ parameters')
+parser.add_argument('--m24', action='store_true', 
+                    help='Use M=24 (exact match with PTQ-Float). Default is M=20.')
+args = parser.parse_args()
+
 # Fixed-point precision parameters
-M = 20  # Fractional bits for scale factors (eff_scale_fp, beta_fp)
+# M=20: Smaller multipliers, 13 LSB max error vs PTQ-Float
+# M=24: Larger multipliers, 0 LSB error (exact match with PTQ-Float + HW rounding)
+M = 24 if args.m24 else 20
 K = 4096  # Fixed-point scale for adjacency matrix (2^12)
 K_BITS = 12  # log2(K)
 
