@@ -26,6 +26,7 @@ void graphsage_network(
     const weight_t bias2[OUT_FEATURES],
     data_t output[NUM_NODES][OUT_FEATURES]
 ) {
+    #pragma HLS PIPELINE II=1
     // Note: No #pragma HLS INLINE here so C simulation can compile
     // HLS will inline this during synthesis anyway since it just calls the template
     

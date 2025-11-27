@@ -29,6 +29,7 @@ void graphsage_network_ptq(
     quant_scale_t scale_w2,
     quant_scale_t scale_out
 ) {
+    #pragma HLS PIPELINE II=1
     // Note: No #pragma HLS INLINE here so C simulation can compile
     // HLS will inline this during synthesis anyway since it just calls the template
     

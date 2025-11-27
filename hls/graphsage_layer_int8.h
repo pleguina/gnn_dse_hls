@@ -1,27 +1,29 @@
 /**
- * GraphSAGE Layer for FPGA Implementation - PURE INT8 VERSION
- * Header file with type definitions and function declarations
- * 
- * This version uses PURE INTEGER arithmetic - NO floating point operations!
- * 
- * Based on analysis from tests/compare_ptq_float_vs_int8_detailed.py:
- *   - M=20: 13 LSB max error vs PTQ-Float (smaller multipliers)
- *   - M=24: 0 LSB error vs PTQ-Float (exact match, recommended)
- * 
- * Quantization scheme:
- *   - Weights: INT8 symmetric quantization
- *   - Activations: INT8 symmetric quantization  
- *   - Accumulators: INT32 for intermediate sums
- *   - Adjacency: INT16 (scaled by K=4096)
- *   - Scale factors: Fixed-point with M fractional bits
- *   - Rounding: (x + (1 << (M-1))) >> M (round half up)
- * 
+ * GraphSAGE Layer for FPGA Implementation - PURE INT8 VERSION (PARAMETRIC)
+ *
+ * - Pure integer arithmetic: NO floating-point in datapath.
+ * - INT8 activations and weights.
+ * - Fixed-point scales with M fractional bits.
+ * - All micro-architecture knobs (unroll factors, pipeline II, resource
+ *   binding, bit-widths) are configurable via macros.
+ *
+ * Quantization scheme (same as your previous version):
+ *   - Weights:    INT8 symmetric.
+ *   - Activations:INT8 symmetric.
+ *   - Accumulators: INT32.
+ *   - Adjacency:  scaled and stored as integer (adj_t).
+ *   - Scales:     fixed-point scale_fp_t with M_BITS fractional bits.
+ *
  * Key formulas:
- *   Aggregation: q_agg = (sum(A_int16 * q_in) * beta_fp + (1<<(M-1))) >> M
- *   Linear:      q_out = (acc * eff_scale_fp + (1<<(M-1))) >> M
- * 
+ *   Aggregation:
+ *      q_agg[i,f] = clamp( (sum_j(A_int[i,j] * q_in[j,f]) * beta_fp
+ *                           + 2^(M-1)) >> M )
+ *
+ *   Linear:
+ *      q_out[n,o] = clamp( (acc * eff_scale_fp + 2^(M-1)) >> M )
+ *
  * Where:
- *   beta_fp = round(scale_in / (K * scale_out) * 2^M)
+ *   beta_fp      = round(scale_in / (K * scale_out) * 2^M)
  *   eff_scale_fp = round((scale_in * scale_w / scale_out) * 2^M)
  */
 
@@ -33,8 +35,10 @@
 #include <cstdio>
 #endif
 
+#include <ap_int.h>
+
 // ============================================================================
-// Configuration Parameters
+// High-level configuration (graph / feature sizes)
 // ============================================================================
 
 #ifndef NUM_NODES
@@ -54,201 +58,320 @@
 #endif
 
 // ============================================================================
-// Fixed-Point Configuration
+// Fixed-point configuration (scales, adjacency, accumulators)
 // ============================================================================
 
-// M = number of fractional bits for fixed-point scales
-// M=20: 13 LSB max error, smaller multipliers (20-bit scales)
-// M=24: 0 LSB error (exact match), larger multipliers (24-bit scales)
+// Number of fractional bits for fixed-point scales (M in docs).
+// - M=20: ~13 LSB max error vs PTQ-Float, smaller multipliers.
+// - M=24: 0 LSB error (exact match), larger multipliers.
 #ifndef M_BITS
-#define M_BITS 24  // Recommended for exact match with PTQ-Float
+#define M_BITS 24
 #endif
 
-// K = adjacency matrix scaling factor (2^K_BITS)
+// Adjacency scaling: A_float * (1 << K_BITS) -> adj_t
+// Default K=2^12 = 4096 (as in your PTQ analysis).
 #ifndef K_BITS
 #define K_BITS 12
 #endif
-#define K_VALUE (1 << K_BITS)  // 4096
 
-// Rounding constant: (1 << (M-1))
-#define ROUND_CONST (1LL << (M_BITS - 1))
+// Bit-widths for internal integer types.
+// You can tune these if you ever see overflow in analysis.
+
+#ifndef ADJ_BITS
+// Adjacency values are scaled by 2^K_BITS and typically in [0,1],
+// so 1 sign bit + K_BITS is plenty. Use a bit of margin.
+#define ADJ_BITS (K_BITS + 4)   // e.g. 16 bits when K_BITS=12
+#endif
+
+#ifndef ACC_BITS
+// Accumulator for sums of muls (e.g. up to N_NODES * adj * feat).
+#define ACC_BITS 32
+#endif
+
+#ifndef SCALE_BITS
+// Fixed-point scale value: eff_scale_fp, beta_fp.
+// Needs to represent +/- (something close to 2^M).
+#define SCALE_BITS (M_BITS + 8)  // some headroom
+#endif
+
+#ifndef MULT_BITS
+// Product width: acc * scale_fp, tmp * beta_fp.
+// Rule of thumb: ACC_BITS + SCALE_BITS - M_BITS + margin.
+#define MULT_BITS (ACC_BITS + SCALE_BITS)
+#endif
+
+// Rounding constant: (1 << (M_BITS - 1)) in MULT domain
+// (cast to MULT_BITS to avoid truncation).
+#define ROUND_CONST ((ap_int<MULT_BITS>)(1) << (M_BITS - 1))
 
 // ============================================================================
-// Type Definitions - PURE INTEGER VERSION
+// Micro-architecture knobs (unroll, pipeline, binding)
+// ============================================================================
+//
+// These let you control parallelism from the outside (via -D...).
+// Default values are "safe" (no outer unrolling, II=1 inner pipelining).
+
+// ---- Aggregation (aggregate_int8) ----
+
+// Pipeline II for the (i,f) loop in aggregation
+#ifndef AGG_PIPELINE_II
+#define AGG_PIPELINE_II 1
+#endif
+
+// Unroll factor for J loop (neighbors)
+#ifndef AGG_UNROLL_J
+#define AGG_UNROLL_J 1
+#endif
+
+// ---- Linear (linear_int8) ----
+
+// Pipeline II for (n,o) loop in linear
+#ifndef LIN_PIPELINE_II
+#define LIN_PIPELINE_II 1
+#endif
+
+// Unroll factor for F loop (features)
+#ifndef LIN_UNROLL_F
+#define LIN_UNROLL_F 1
+#endif
+
+// ---- ReLU (relu_int8) ----
+
+// Unroll factor for ReLU loops
+#ifndef RELU_UNROLL_F
+#define RELU_UNROLL_F 1
+#endif
+
+// ---- Resource binding knobs (bind_op) ----
+//
+// You can enable these to push some multipliers to fabric or enforce DSP.
+// By default they are disabled; you enable by defining macros in your script.
+//
+// Example (aggregation mul in fabric):
+//   -DAGG_MUL_IN_FABRIC
+//
+// Example (linear scaling mul in DSP with latency 2):
+//   -DLIN_SCALE_IN_DSP -DLIN_SCALE_LATENCY=2
+
+// Aggregation: adj * feature -> tmp
+// If defined, the mul will be implemented in LUT fabric.
+#ifdef AGG_MUL_IN_FABRIC
+#define AGG_BIND_MUL_FABRIC
+#endif
+
+// Linear scaling: acc * eff_scale_fp or tmp * beta_fp
+// If defined, the mul will be implemented in DSP.
+#ifdef LIN_SCALE_IN_DSP
+#ifndef LIN_SCALE_LATENCY
+#define LIN_SCALE_LATENCY 1
+#endif
+#define LIN_BIND_SCALE_DSP
+#endif
+
+// ============================================================================
+// Type definitions - PURE INTEGER VERSION
 // ============================================================================
 
-typedef int8_t   data_t;      // Quantized activations (INT8)
-typedef int8_t   weight_t;    // Quantized weights (INT8)
-typedef int16_t  adj_t;       // Adjacency matrix (INT16, scaled by K)
-typedef int32_t  acc_t;       // Accumulator for MAC (INT32)
-typedef int32_t  bias_t;      // Bias (INT32, in accumulator domain)
-typedef int32_t  scale_fp_t;  // Fixed-point scale factors (INT32)
-typedef int64_t  mult_t;      // For 32x32 multiplication results (INT64)
+// Quantized activations and weights (INT8)
+typedef ap_int<8>        data_t;
+typedef ap_int<8>        weight_t;
+
+// Adjacency matrix entries (scaled by 2^K_BITS)
+typedef ap_int<ADJ_BITS> adj_t;
+
+// Accumulator (MAC sums)
+typedef ap_int<ACC_BITS> acc_t;
+
+// Bias in accumulator domain
+typedef ap_int<ACC_BITS> bias_t;
+
+// Fixed-point scale factors (eff_scale_fp, beta_fp)
+typedef ap_int<SCALE_BITS> scale_fp_t;
+
+// Intermediate product for fixed-point scaling
+typedef ap_int<MULT_BITS> mult_t;
 
 // ============================================================================
-// Helper Functions
+// Helper: clamp MULT_BITS to INT8 range [-128, 127]
 // ============================================================================
 
-/**
- * Clamp INT64 result to INT8 range [-128, 127]
- */
-inline int8_t int8_clamp(int64_t x) {
-    #pragma HLS INLINE
-    if (x > 127) return 127;
-    if (x < -128) return -128;
-    return (int8_t)x;
+inline data_t int8_clamp(mult_t x) {
+#pragma HLS INLINE
+    if (x > 127)
+        return data_t(127);
+    if (x < -128)
+        return data_t(-128);
+    return data_t(x);
 }
 
-/**
- * Fixed-point multiply and shift with rounding
- * result = (a * b + ROUND) >> M
- */
-inline int64_t fp_mult_shift(int64_t a, int32_t b) {
-    #pragma HLS INLINE
-    int64_t product = a * (int64_t)b;
-    int64_t rounded = product + ROUND_CONST;
+// ============================================================================
+// Helper: fixed-point multiply and shift with rounding
+// result = (a * b + ROUND_CONST) >> M_BITS
+// a: ACC or similar, b: scale_fp_t
+// ============================================================================
+
+inline mult_t fp_mult_shift(acc_t a, scale_fp_t b) {
+#pragma HLS INLINE
+    mult_t product = (mult_t)a * (mult_t)b;
+    mult_t rounded = product + ROUND_CONST;
     return rounded >> M_BITS;
 }
 
 // ============================================================================
-// Pure Integer Aggregation
+// Pure integer aggregation
 // ============================================================================
 
 /**
- * Integer-only mean aggregation
- * 
- * Formula: q_agg[i,f] = clamp((sum_j(A_int16[i,j] * q_in[j,f]) * beta_fp + ROUND) >> M)
- * 
- * Where:
- *   A_int16[i,j] = round(adj_float[i,j] * K)  (precomputed)
- *   beta_fp = round(scale_in / (K * scale_out) * 2^M)
- * 
- * Template parameters:
- *   N_NODES: Number of nodes
- *   N_FEAT: Number of features
+ * Integer-only aggregation:
+ *
+ *   q_agg[i,f] = clamp( ( sum_j(adj[i,j] * q_in[j,f]) * beta_fp
+ *                         + 2^(M-1) ) >> M )
+ *
+ * - adj_matrix is integer-scaled adjacency (adj_t).
+ * - features are INT8.
+ * - beta_fp encodes scale_in / (K * scale_out).
  */
 template<int N_NODES, int N_FEAT>
 void aggregate_int8(
-    const adj_t adj_matrix[N_NODES][N_NODES],
+    const adj_t  adj_matrix[N_NODES][N_NODES],
     const data_t features[N_NODES][N_FEAT],
-    data_t agg_out[N_NODES][N_FEAT],
-    scale_fp_t beta_fp
+    data_t       agg_out[N_NODES][N_FEAT],
+    scale_fp_t   beta_fp
 ) {
-    #pragma HLS INLINE
+#pragma HLS INLINE
 
-    AGG_I: for (int i = 0; i < N_NODES; i++) {
-        #pragma HLS UNROLL
-        AGG_F: for (int f = 0; f < N_FEAT; f++) {
-            #pragma HLS UNROLL
-            
-            // INT32 accumulator for weighted sum
+AGG_I:
+    for (int i = 0; i < N_NODES; i++) {
+    AGG_F:
+        for (int f = 0; f < N_FEAT; f++) {
+#pragma HLS PIPELINE II=AGG_PIPELINE_II
+
+            // INT accumulator for sum_j(adj * feat)
             acc_t tmp = 0;
-            
-            AGG_J: for (int j = 0; j < N_NODES; j++) {
-                #pragma HLS UNROLL
-                // INT16 * INT8 -> INT32 (no overflow for reasonable N_NODES)
-                tmp += (acc_t)adj_matrix[i][j] * (acc_t)features[j][f];
+
+        AGG_J:
+            for (int j = 0; j < N_NODES; j++) {
+#if AGG_UNROLL_J > 1
+#pragma HLS UNROLL factor=AGG_UNROLL_J
+#endif
+                // INT16-ish * INT8 -> ACC
+                acc_t prod = (acc_t)adj_matrix[i][j] * (acc_t)features[j][f];
+
+#ifdef AGG_BIND_MUL_FABRIC
+#pragma HLS BIND_OP variable=prod op=mul impl=fabric
+#endif
+
+                tmp += prod;
             }
-            
-            // Apply fixed-point scale: (tmp * beta_fp + ROUND) >> M
+
+            // tmp is in "adj * feat" units.
+            // Apply fixed-point scale beta_fp: (tmp * beta_fp + ROUND) >> M.
             mult_t scaled = (mult_t)tmp * (mult_t)beta_fp;
             mult_t rounded = scaled + ROUND_CONST;
-            int64_t result = rounded >> M_BITS;
-            
-            // Clamp to INT8
+            mult_t result = rounded >> M_BITS;
+
             agg_out[i][f] = int8_clamp(result);
-            
-            #ifndef __SYNTHESIS__
+
+#ifndef __SYNTHESIS__
             if (i == 6 && f < 3) {
                 printf("  AGG_INT8: node=%d feat=%d tmp=%d scaled=%lld result=%lld out=%d\n",
-                       i, f, tmp, (long long)scaled, (long long)result, (int)agg_out[i][f]);
+                       i, f,
+                       (int)tmp,
+                       (long long)scaled,
+                       (long long)result,
+                       (int)agg_out[i][f]);
             }
-            #endif
+#endif
         }
     }
 }
 
 // ============================================================================
-// Pure Integer Linear Transform
+// Pure integer linear transform
 // ============================================================================
 
 /**
- * Integer-only linear transformation
- * 
- * Formula: q_out[n,o] = clamp((acc * eff_scale_fp + ROUND) >> M)
- * Where: acc = bias_int32[o] + sum_f(q_in[n,f] * w_int8[o,f])
- * 
- * The bias is pre-scaled to accumulator domain:
- *   bias_int32 = round(bias_float / (scale_in * scale_w))
- * 
- * eff_scale_fp = round((scale_in * scale_w / scale_out) * 2^M)
- * 
- * Template parameters:
- *   N_NODES: Number of nodes
- *   IN_FEAT: Input features
- *   OUT_FEAT: Output features
+ * Integer-only linear:
+ *
+ *   acc = bias[o] + sum_f( q_in[n,f] * w[o,f] )
+ *   q_out[n,o] = clamp( (acc * eff_scale_fp + 2^(M-1)) >> M )
+ *
+ * - bias is pre-scaled to accumulator domain:
+ *     bias_int32 = round(bias_float / (scale_in * scale_w))
+ * - eff_scale_fp encodes (scale_in * scale_w / scale_out) * 2^M
  */
 template<int N_NODES, int IN_FEAT, int OUT_FEAT>
 void linear_int8(
-    const data_t features[N_NODES][IN_FEAT],
+    const data_t  features[N_NODES][IN_FEAT],
     const weight_t weights[OUT_FEAT][IN_FEAT],
-    const bias_t bias[OUT_FEAT],
-    data_t output[N_NODES][OUT_FEAT],
-    scale_fp_t eff_scale_fp
+    const bias_t   bias[OUT_FEAT],
+    data_t         output[N_NODES][OUT_FEAT],
+    scale_fp_t     eff_scale_fp
 ) {
-    #pragma HLS INLINE
+#pragma HLS INLINE
 
-    LIN_N: for (int n = 0; n < N_NODES; n++) {
-        #pragma HLS UNROLL
-        LIN_O: for (int o = 0; o < OUT_FEAT; o++) {
-            #pragma HLS UNROLL
-            
-            // INT32 accumulator: start with bias
+LIN_N:
+    for (int n = 0; n < N_NODES; n++) {
+    LIN_O:
+        for (int o = 0; o < OUT_FEAT; o++) {
+#pragma HLS PIPELINE II=LIN_PIPELINE_II
+
+            // Start with bias in accumulator domain.
             acc_t acc = bias[o];
-            
-            // MAC: acc += sum(x * w)
-            LIN_F: for (int f = 0; f < IN_FEAT; f++) {
-                #pragma HLS UNROLL
-                // INT8 * INT8 -> INT32
+
+        LIN_F:
+            for (int f = 0; f < IN_FEAT; f++) {
+#if LIN_UNROLL_F > 1
+#pragma HLS UNROLL factor=LIN_UNROLL_F
+#endif
                 acc += (acc_t)features[n][f] * (acc_t)weights[o][f];
             }
-            
-            // Apply fixed-point scale: (acc * eff_scale_fp + ROUND) >> M
+
+            // Apply fixed-point scale: (acc * eff_scale_fp + ROUND) >> M.
             mult_t scaled = (mult_t)acc * (mult_t)eff_scale_fp;
+#ifdef LIN_BIND_SCALE_DSP
+#pragma HLS BIND_OP variable=scaled op=mul impl=dsp latency=LIN_SCALE_LATENCY
+#endif
             mult_t rounded = scaled + ROUND_CONST;
-            int64_t result = rounded >> M_BITS;
-            
-            // Clamp to INT8
+            mult_t result = rounded >> M_BITS;
+
             output[n][o] = int8_clamp(result);
-            
-            #ifndef __SYNTHESIS__
+
+#ifndef __SYNTHESIS__
             if (n == 6 && o < 3) {
                 printf("  LIN_INT8: node=%d out=%d acc=%d scaled=%lld result=%lld out=%d\n",
-                       n, o, acc, (long long)scaled, (long long)result, (int)output[n][o]);
+                       n, o,
+                       (int)acc,
+                       (long long)scaled,
+                       (long long)result,
+                       (int)output[n][o]);
             }
-            #endif
+#endif
         }
     }
 }
 
 // ============================================================================
-// Pure Integer ReLU
+// Pure integer ReLU
 // ============================================================================
 
 /**
- * ReLU for INT8 with symmetric quantization (zero_point = 0)
- * Simply: max(0, x)
+ * ReLU with symmetric quantization (zero_point = 0):
+ *   q_out = max(0, q_in)
  */
 template<int N_NODES, int N_FEAT>
 void relu_int8(
     data_t data[N_NODES][N_FEAT]
 ) {
-    #pragma HLS INLINE
+#pragma HLS INLINE
 
-    RELU_N: for (int n = 0; n < N_NODES; n++) {
-        #pragma HLS UNROLL
-        RELU_F: for (int f = 0; f < N_FEAT; f++) {
-            #pragma HLS UNROLL
+RELU_N:
+    for (int n = 0; n < N_NODES; n++) {
+    RELU_F:
+        for (int f = 0; f < N_FEAT; f++) {
+#if RELU_UNROLL_F > 1
+#pragma HLS UNROLL factor=RELU_UNROLL_F
+#endif
             if (data[n][f] < 0) {
                 data[n][f] = 0;
             }
@@ -257,135 +380,127 @@ void relu_int8(
 }
 
 // ============================================================================
-// Full Network - Pure Integer
+// Full network - Pure INT8
 // ============================================================================
 
 /**
  * Two-layer GraphSAGE network - PURE INT8 VERSION
- * 
- * NO FLOATING POINT OPERATIONS IN THE DATAPATH!
- * 
- * Layer 1: agg1 = aggregate(input, beta1_fp)
- *          hidden = ReLU(linear(agg1, W1, b1, eff_scale1_fp))
- * Layer 2: agg2 = aggregate(hidden, beta2_fp)
- *          output = linear(agg2, W2, b2, eff_scale2_fp)
- * 
- * Fixed-point parameters (precomputed):
- *   beta1_fp: Aggregation scale for layer 1
- *   beta2_fp: Aggregation scale for layer 2 (= K for hidden->hidden)
- *   eff_scale1_fp: Linear requantization scale for layer 1
- *   eff_scale2_fp: Linear requantization scale for layer 2
+ *
+ * Layer 1:
+ *   agg1   = aggregate_int8(input, beta1_fp)
+ *   hidden = ReLU( linear_int8(agg1, W1, b1, eff_scale1_fp) )
+ *
+ * Layer 2:
+ *   agg2   = aggregate_int8(hidden, beta2_fp)
+ *   output = linear_int8(agg2, W2, b2, eff_scale2_fp)
+ *
+ * All operations are done in integer-only fixed-point arithmetic.
  */
 template<int N_NODES, int IN_FEAT, int HIDDEN_FEAT, int OUT_FEAT>
 void graphsage_int8_template(
-    const adj_t adj_matrix[N_NODES][N_NODES],
-    const data_t input[N_NODES][IN_FEAT],
+    const adj_t   adj_matrix[N_NODES][N_NODES],
+    const data_t  input[N_NODES][IN_FEAT],
     const weight_t weights1[HIDDEN_FEAT][IN_FEAT],
-    const bias_t bias1[HIDDEN_FEAT],
+    const bias_t   bias1[HIDDEN_FEAT],
     const weight_t weights2[OUT_FEAT][HIDDEN_FEAT],
-    const bias_t bias2[OUT_FEAT],
-    data_t output[N_NODES][OUT_FEAT],
-    scale_fp_t beta1_fp,
-    scale_fp_t beta2_fp,
-    scale_fp_t eff_scale1_fp,
-    scale_fp_t eff_scale2_fp
+    const bias_t   bias2[OUT_FEAT],
+    data_t         output[N_NODES][OUT_FEAT],
+    scale_fp_t     beta1_fp,
+    scale_fp_t     beta2_fp,
+    scale_fp_t     eff_scale1_fp,
+    scale_fp_t     eff_scale2_fp
 ) {
-    #pragma HLS PIPELINE II=1
-    
-    // Intermediate buffers
-    data_t agg1[N_NODES][IN_FEAT];
+    // Do NOT pipeline the whole function; internal loops are pipelined.
+    // This keeps control over II and resource use local to each kernel.
+
+    // Intermediate buffers (no full partitioning by default).
+    data_t agg1  [N_NODES][IN_FEAT];
     data_t hidden[N_NODES][HIDDEN_FEAT];
-    data_t agg2[N_NODES][HIDDEN_FEAT];
+    data_t agg2  [N_NODES][HIDDEN_FEAT];
 
-    #pragma HLS ARRAY_PARTITION variable=agg1 complete dim=1
-    #pragma HLS ARRAY_PARTITION variable=agg1 complete dim=2
-    #pragma HLS ARRAY_PARTITION variable=hidden complete dim=1
-    #pragma HLS ARRAY_PARTITION variable=hidden complete dim=2
-    #pragma HLS ARRAY_PARTITION variable=agg2 complete dim=1
-    #pragma HLS ARRAY_PARTITION variable=agg2 complete dim=2
+#ifndef __SYNTHESIS__
+    printf("\n=== INT8 HLS: LAYER 1 AGGREGATION (beta1_fp=%d) ===\n",
+           (int)beta1_fp);
+#endif
 
-    // ========== Layer 1: Aggregate ==========
-    #ifndef __SYNTHESIS__
-    printf("\n=== INT8 HLS: LAYER 1 AGGREGATION (beta1_fp=%d) ===\n", beta1_fp);
-    #endif
-    
-    aggregate_int8<N_NODES, IN_FEAT>(adj_matrix, input, agg1, beta1_fp);
+    aggregate_int8<N_NODES, IN_FEAT>(
+        adj_matrix, input, agg1, beta1_fp
+    );
 
-    #ifndef __SYNTHESIS__
+#ifndef __SYNTHESIS__
     printf("Agg1[6,:8] = [");
     for (int f = 0; f < 8 && f < IN_FEAT; f++) {
         printf("%d%s", (int)agg1[6][f], f < 7 ? ", " : "");
     }
     printf("]\n");
-    #endif
+    printf("\n=== INT8 HLS: LAYER 1 LINEAR (eff_scale1_fp=%d) ===\n",
+           (int)eff_scale1_fp);
+#endif
 
-    // ========== Layer 1: Linear + ReLU ==========
-    #ifndef __SYNTHESIS__
-    printf("\n=== INT8 HLS: LAYER 1 LINEAR (eff_scale1_fp=%d) ===\n", eff_scale1_fp);
-    #endif
-    
-    linear_int8<N_NODES, IN_FEAT, HIDDEN_FEAT>(agg1, weights1, bias1, hidden, eff_scale1_fp);
+    linear_int8<N_NODES, IN_FEAT, HIDDEN_FEAT>(
+        agg1, weights1, bias1, hidden, eff_scale1_fp
+    );
     relu_int8<N_NODES, HIDDEN_FEAT>(hidden);
 
-    #ifndef __SYNTHESIS__
+#ifndef __SYNTHESIS__
     printf("Hidden[6,:8] = [");
     for (int f = 0; f < 8 && f < HIDDEN_FEAT; f++) {
         printf("%d%s", (int)hidden[6][f], f < 7 ? ", " : "");
     }
     printf("]\n");
-    #endif
+    printf("\n=== INT8 HLS: LAYER 2 AGGREGATION (beta2_fp=%d) ===\n",
+           (int)beta2_fp);
+#endif
 
-    // ========== Layer 2: Aggregate ==========
-    #ifndef __SYNTHESIS__
-    printf("\n=== INT8 HLS: LAYER 2 AGGREGATION (beta2_fp=%d) ===\n", beta2_fp);
-    #endif
-    
-    aggregate_int8<N_NODES, HIDDEN_FEAT>(adj_matrix, hidden, agg2, beta2_fp);
+    aggregate_int8<N_NODES, HIDDEN_FEAT>(
+        adj_matrix, hidden, agg2, beta2_fp
+    );
 
-    #ifndef __SYNTHESIS__
+#ifndef __SYNTHESIS__
     printf("Agg2[6,:8] = [");
     for (int f = 0; f < 8 && f < HIDDEN_FEAT; f++) {
         printf("%d%s", (int)agg2[6][f], f < 7 ? ", " : "");
     }
     printf("]\n");
-    #endif
+    printf("\n=== INT8 HLS: LAYER 2 LINEAR (eff_scale2_fp=%d) ===\n",
+           (int)eff_scale2_fp);
+#endif
 
-    // ========== Layer 2: Linear (no ReLU) ==========
-    #ifndef __SYNTHESIS__
-    printf("\n=== INT8 HLS: LAYER 2 LINEAR (eff_scale2_fp=%d) ===\n", eff_scale2_fp);
-    #endif
-    
-    linear_int8<N_NODES, HIDDEN_FEAT, OUT_FEAT>(agg2, weights2, bias2, output, eff_scale2_fp);
+    linear_int8<N_NODES, HIDDEN_FEAT, OUT_FEAT>(
+        agg2, weights2, bias2, output, eff_scale2_fp
+    );
 
-    #ifndef __SYNTHESIS__
+#ifndef __SYNTHESIS__
     printf("Output[6,:] = [");
     for (int f = 0; f < OUT_FEAT; f++) {
-        printf("%d%s", (int)output[6][f], f < OUT_FEAT-1 ? ", " : "");
+        printf("%d%s", (int)output[6][f], f < OUT_FEAT - 1 ? ", " : "");
     }
     printf("]\n");
     printf("\n=== INT8 HLS COMPLETE ===\n\n");
-    #endif
+#endif
 }
 
 // ============================================================================
-// Top-level function declaration
+// Top-level wrapper for HLS synthesis
 // ============================================================================
 
 /**
- * Non-templated wrapper for HLS synthesis
+ * Non-templated top function using default sizes from macros.
+ * You can still instantiate graphsage_int8_template<> directly
+ * if you want multiple configurations.
  */
 void graphsage_int8(
-    const adj_t adj_matrix[NUM_NODES][NUM_NODES],
-    const data_t input[NUM_NODES][IN_FEATURES],
+    const adj_t   adj_matrix[NUM_NODES][NUM_NODES],
+    const data_t  input    [NUM_NODES][IN_FEATURES],
     const weight_t weights1[HIDDEN_FEATURES][IN_FEATURES],
-    const bias_t bias1[HIDDEN_FEATURES],
+    const bias_t   bias1   [HIDDEN_FEATURES],
     const weight_t weights2[OUT_FEATURES][HIDDEN_FEATURES],
-    const bias_t bias2[OUT_FEATURES],
-    data_t output[NUM_NODES][OUT_FEATURES],
-    scale_fp_t beta1_fp,
-    scale_fp_t beta2_fp,
-    scale_fp_t eff_scale1_fp,
-    scale_fp_t eff_scale2_fp
+    const bias_t   bias2   [OUT_FEATURES],
+    data_t         output  [NUM_NODES][OUT_FEATURES],
+    scale_fp_t     beta1_fp,
+    scale_fp_t     beta2_fp,
+    scale_fp_t     eff_scale1_fp,
+    scale_fp_t     eff_scale2_fp
 );
 
 #endif // GRAPHSAGE_LAYER_INT8_H
