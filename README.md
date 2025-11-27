@@ -231,6 +231,55 @@ vitis_hls -f synth.tcl
 # Results in solution1/syn/report/csynth.rpt
 ```
 
+### Step 8: Analyze HLS Reports
+
+Parse and compare synthesis reports from all implementations:
+
+```bash
+# Compare all implementations
+python scripts/parse_hls_report.py --all build/hls
+
+# Parse single project
+python scripts/parse_hls_report.py build/hls/graphsage_int8
+
+# Export to JSON
+python scripts/parse_hls_report.py --json --all build/hls -o build/hls_comparison.json
+
+# Export to CSV
+python scripts/parse_hls_report.py --csv build/hls_comparison.csv --all build/hls
+```
+
+**Extracted metrics:**
+- Timing: Target/estimated clock, frequency, slack
+- Latency: Cycles, real-time, initiation interval (II)
+- Resources: DSP, FF, LUT, BRAM, URAM (absolute and %)
+- Timing violations detection
+
+### Step 9: Visualize HLS Reports
+
+Generate visual comparisons of HLS implementations:
+
+```bash
+# Generate full dashboard
+python scripts/visualize_hls_report.py --all build/hls -o build/plots/hls_comparison.png
+
+# From JSON file
+python scripts/visualize_hls_report.py --json build/hls_comparison.json -o build/plots/hls_comparison.png
+
+# Individual charts
+python scripts/visualize_hls_report.py --all build/hls --chart resources -o build/plots/hls_resources.png
+python scripts/visualize_hls_report.py --all build/hls --chart latency -o build/plots/hls_latency.png
+python scripts/visualize_hls_report.py --all build/hls --chart efficiency -o build/plots/hls_efficiency.png
+```
+
+**Available charts:**
+- `dashboard` (default): Full comparison with all metrics
+- `resources`: Resource utilization bar chart (DSP, FF, LUT %)
+- `latency`: Latency comparison with timing status
+- `absolute`: Absolute resource counts
+- `efficiency`: Latency vs DSP scatter plot
+- `timing`: Clock frequency analysis
+
 ## Model Architecture
 
 ### Base Model (Full Cora)
@@ -279,6 +328,92 @@ ReducedGraphSAGE(
 ```
 output = clamp((acc * scale_fp + (1 << (M-1))) >> M, -128, 127)
 ```
+
+### Bit-Width Optimization (INT8)
+
+The PTQ-INT8 implementation supports automatic bit-width optimization to reduce resource usage while maintaining numerical correctness.
+
+**Problem**: Default conservative bit-widths waste FPGA resources:
+- ACC_BITS = 32 (accumulator)
+- SCALE_BITS = 32 (fixed-point scales)
+- MULT_BITS = 64 (scaling products)
+
+**Solution**: Analyze actual numerical ranges and compute minimal safe bit-widths.
+
+#### Running the Optimizer
+
+```bash
+cd src
+python optimize_bitwidths_int8.py              # Default: data-driven + 2-bit margin
+python optimize_bitwidths_int8.py --method theoretical  # Worst-case bounds
+python optimize_bitwidths_int8.py --safety-margin 4     # More conservative
+```
+
+**Outputs:**
+- `build/hls/auto_generated_bitwidths.h` - HLS header with optimized types
+- `hls/auto_generated_bitwidths.h` - Copy for direct inclusion
+- `build/hls/bitwidth_analysis.json` - Detailed analysis report
+
+#### Optimization Methods
+
+| Method | Description | Use Case |
+|--------|-------------|----------|
+| **Theoretical** | Worst-case bounds from model dimensions | Safety-critical designs |
+| **Data-driven** | Actual maxima from integer simulation | Resource-optimized designs |
+| **Both** (default) | Data-driven with theoretical validation | Recommended |
+
+#### Example Results
+
+For the 8-node subgraph with M=24:
+
+| Type | Default | Optimized | Savings |
+|------|---------|-----------|---------|
+| ADJ_BITS | 16 | 16 | 0 bits |
+| ACC_BITS | 32 | 22 | **10 bits** |
+| SCALE_BITS | 32 | 21 | **11 bits** |
+| MULT_BITS | 64 | 43 | **21 bits** |
+
+**Total**: ~42 bits narrower types → significant DSP/LUT savings.
+
+#### Using Optimized Bit-Widths in HLS
+
+**Option 1: Include header with flag**
+```cpp
+#define USE_OPTIMIZED_BITWIDTHS
+#include "graphsage_layer_int8.h"
+```
+
+**Option 2: Pass compiler flags**
+```bash
+vitis_hls -D USE_OPTIMIZED_BITWIDTHS -f project.tcl
+```
+
+**Option 3: Manual override**
+```bash
+vitis_hls -D ACC_BITS=22 -D SCALE_BITS=21 -D MULT_BITS=43 -f project.tcl
+```
+
+#### Theoretical Formulas
+
+The optimizer uses these formulas for worst-case bounds:
+
+```
+# Aggregation accumulator
+|tmp| ≤ deg_max × A_int_max × feat_max
+AGG_BITS = ceil(log2(|tmp|)) + 1 + margin
+
+# Linear accumulator
+|acc| ≤ max(|bias|, F_in × feat_max × w_max)
+LIN_BITS = ceil(log2(|acc|)) + 1 + margin
+
+# Combined accumulator
+ACC_BITS = max(AGG_BITS, LIN_BITS)
+
+# Scaling product
+MULT_BITS = ACC_BITS + SCALE_BITS
+```
+
+See `docs/notes/bitsize_optimization_int8ptq.txt` for full methodology.
 
 ## Data Flow
 
