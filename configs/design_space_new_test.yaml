@@ -1,0 +1,45 @@
+# Test Design Space Configuration with NEW parameters
+# This forces actual HLS generation, csim, and synthesis
+
+# Experiment metadata
+experiment:
+  name: "new_params_test"
+  description: "Test DSE with new parameters requiring full HLS flow"
+  output_dir: "build/experiments_new"
+  
+# Search space configuration - NEW parameters that don't match existing
+search_space:
+  # Level 1: Algorithm (model architecture) - same as existing
+  algorithm:
+    hidden_dim: [24]
+    m_bits: [20]            # DIFFERENT: 20 instead of 24
+    
+  # Level 2: Quantization parameters
+  quantization:
+    unroll_factor: [1]
+    acc_bits: [28]          # DIFFERENT: 28 instead of 32
+    k_bits: [10]            # DIFFERENT: 10 instead of 12
+    
+  # Level 3: HLS optimization pragmas
+  hls:
+    unroll_nodes: [4]       # DIFFERENT: partial unroll
+    agg_pipeline_ii: [2]    # DIFFERENT: II=2
+    lin_pipeline_ii: [1]
+
+# Constraints
+constraints:
+  max_accuracy_drop: 5.0
+  max_dsp_util: 95.0
+  min_fmax: 250.0
+  
+# Reference baseline
+baseline:
+  model_accuracy: 75.7
+  hls_latency_cycles: 56
+  hls_dsp_count: 6816
+
+# Runtime settings
+settings:
+  skip_existing: true
+  timeout_per_point: 3600   # 1 hour max for synthesis
+  cleanup_hls: false        # Keep HLS artifacts for inspection

@@ -46,7 +46,10 @@ simple-gnn/
 │   ├── prepare_ptq_int8_parameters.py # Integer-only PTQ conversion
 │   ├── analyze_models.py             # Model analysis and visualization
 │   ├── visualization.py              # Plotting utilities
-│   └── config.py                     # Configuration management
+│   ├── config.py                     # Configuration management
+│   ├── optimize_bitwidths_int8.py    # Bit-width optimizer for INT8
+│   ├── explore_design_space.py       # Design Space Exploration (DSE)
+│   └── analyze_pareto.py             # Pareto front analysis
 │
 ├── hls/                              # HLS C++ implementations
 │   ├── graphsage_layer_float.h/cpp   # Float implementation
@@ -60,6 +63,12 @@ simple-gnn/
 │   ├── generate_graphsage_ptq_tcl.py # PTQ TCL generator
 │   ├── generate_graphsage_int8_tcl.py # INT8 TCL generator
 │   └── tcl_example/                  # Jinja2 TCL templates
+│
+├── scripts/                          # Utility scripts
+│   ├── parse_hls_report.py           # Parse HLS synthesis reports
+│   ├── visualize_hls_report.py       # Visualize HLS metrics
+│   ├── verify_setup.py               # Environment verification
+│   └── clean_build.py                # Clean build artifacts
 │
 ├── tests/                            # Test vector generators
 │   ├── generate_test_vectors_float.py      # Float test vectors
@@ -81,13 +90,17 @@ simple-gnn/
 │   ├── test_vectors_ptq_int8/        # PTQ-INT8 test vectors
 │   ├── plots/                        # Visualization outputs
 │   │   └── model_stats.json          # Model comparison statistics
+│   ├── experiments/                  # DSE results (generated)
+│   │   ├── design_space_results.json # Full results database
+│   │   └── design_points/            # Individual design artifacts
 │   └── hls/                          # HLS project outputs
 │       ├── graphsage_float/          # Float HLS project
 │       ├── graphsage_ptq/            # PTQ HLS project
 │       └── graphsage_int8/           # INT8 HLS project
 │
 ├── configs/
-│   └── model_config.yaml             # Model hyperparameters
+│   ├── model_config.yaml             # Model hyperparameters
+│   └── design_space.yaml             # DSE search space configuration
 ├── docs/                             # Additional documentation
 ├── run_pipeline.py                   # Main pipeline script
 └── requirements.txt                  # Python dependencies
@@ -414,6 +427,113 @@ MULT_BITS = ACC_BITS + SCALE_BITS
 ```
 
 See `docs/notes/bitsize_optimization_int8ptq.txt` for full methodology.
+
+### Design Space Exploration (DSE)
+
+The project includes a comprehensive pipeline for automated design space exploration across model architecture, quantization parameters, and HLS optimization settings.
+
+**Components:**
+- `configs/design_space.yaml` - DSE configuration file
+- `src/explore_design_space.py` - Main exploration orchestrator
+- `src/analyze_pareto.py` - Pareto front analysis and visualization
+
+#### Design Space Configuration
+
+The search space is organized in three hierarchical levels:
+
+```yaml
+# configs/design_space.yaml
+search_space:
+  algorithm:            # Level 1: Model architecture
+    hidden_dim: [16, 24, 32]
+    m_bits: [20, 24, 28]      # Fixed-point precision
+  quantization:         # Level 2: Quantization parameters
+    unroll_factor: [1, 8]     # Loop unrolling
+    acc_bits: [24, 32]
+  hls:                  # Level 3: HLS pragmas
+    agg_pipeline_ii: [1, 2]
+    lin_pipeline_ii: [1, 2]
+```
+
+#### Running Design Space Exploration
+
+```bash
+# Dry run - preview design points without execution
+python src/explore_design_space.py --config configs/design_space.yaml --dry-run
+
+# Full exploration (requires Vitis HLS)
+python src/explore_design_space.py --config configs/design_space.yaml
+
+# Skip HLS synthesis (PTQ accuracy only)
+python src/explore_design_space.py --config configs/design_space.yaml --skip-hls
+
+# Resume interrupted exploration
+python src/explore_design_space.py --config configs/design_space.yaml --resume
+
+# Parallel execution (4 workers)
+python src/explore_design_space.py --config configs/design_space.yaml --parallel 4
+```
+
+**Outputs:**
+- `build/experiments/design_space_results.json` - Full results database
+- `build/experiments/design_space_results.csv` - CSV export
+- `build/experiments/design_points/` - Individual design point artifacts
+
+#### Pareto Analysis
+
+After exploration, analyze trade-offs with Pareto front visualization:
+
+```bash
+# Generate all Pareto plots
+python src/analyze_pareto.py --input build/experiments/design_space_results.json
+
+# Specific objective pairs
+python src/analyze_pareto.py -i build/experiments/design_space_results.json \
+    --plot accuracy_drop dsp_util
+
+# Interactive display
+python src/analyze_pareto.py -i build/experiments/design_space_results.json --show
+```
+
+**Pareto Plots Generated:**
+| Plot | Objectives | Description |
+|------|------------|-------------|
+| `pareto_accuracy_vs_dsp.png` | Accuracy ↑, DSP ↓ | Accuracy/resource trade-off |
+| `pareto_accuracy_vs_latency.png` | Accuracy ↑, Latency ↓ | Accuracy/speed trade-off |
+| `pareto_latency_vs_dsp.png` | Latency ↓, DSP ↓ | Speed/resource trade-off |
+| `pareto_3d.png` | All three | 3D Pareto surface |
+
+#### DSE Pipeline Architecture
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│                   DESIGN SPACE CONFIGURATION                    │
+│  design_space.yaml → Algorithm × Quantization × HLS settings   │
+└────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌────────────────────────────────────────────────────────────────┐
+│              FOR EACH DESIGN POINT (d16x24_m24_...)            │
+│                                                                 │
+│  1. Generate INT8 parameters with config                       │
+│     └─ prepare_ptq_int8_parameters.py                          │
+│  2. Generate test vectors                                       │
+│     └─ generate_test_vectors_ptq_int8.py                       │
+│  3. Generate HLS project with pragmas                           │
+│     └─ generate_graphsage_int8_tcl.py                          │
+│  4. Run HLS synthesis                                           │
+│     └─ vitis_hls -f project.tcl                                │
+│  5. Parse synthesis report                                      │
+│     └─ parse_hls_report.py                                     │
+│  6. Record results                                              │
+└────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌────────────────────────────────────────────────────────────────┐
+│                    PARETO ANALYSIS                              │
+│  analyze_pareto.py → Pareto-optimal designs + visualizations   │
+└────────────────────────────────────────────────────────────────┘
+```
 
 ## Data Flow
 

@@ -8,6 +8,7 @@ import numpy as np
 import json
 import os
 import sys
+from pathlib import Path
 
 from model_base import GraphSAGE, ReducedGraphSAGE
 from model_qat import ReducedGraphSAGEQAT
@@ -16,6 +17,13 @@ from torch_geometric.transforms import NormalizeFeatures
 from torch_geometric.data import Data
 from quantization_ptq import quantize_tensor
 from config import get_config
+
+# Try to import Brevitas support
+try:
+    from brevitas_models import BrevitasReducedGraphSAGE, BrevitasQuantConfig, check_brevitas_available
+    BREVITAS_AVAILABLE = check_brevitas_available()
+except ImportError:
+    BREVITAS_AVAILABLE = False
 
 # Fix for PyTorch 2.6+ weights_only default change
 torch.serialization.add_safe_globals([Data])
@@ -205,11 +213,23 @@ def main():
     print("GraphSAGE Model Analysis and Visualization")
     print("="*60)
     print(f"📋 Using configuration file")
+    
+    # Setup paths relative to script location
+    script_dir = Path(__file__).parent
+    project_root = script_dir.parent
+    model_dir = project_root / 'build' / 'models'
+    
+    print(f"📁 Project root: {project_root}")
+    print(f"📁 Model directory: {model_dir}")
 
-    # Load dataset
-    print("\nLoading Cora dataset...")
-    dataset = Planetoid(root='./data', name='Cora', transform=NormalizeFeatures())
+    # Load dataset - ensure consistent data for all models
+    print("\n📦 Loading Cora dataset...")
+    dataset = Planetoid(root=str(project_root / 'data'), name='Cora', transform=NormalizeFeatures())
     data = dataset[0]
+    
+    print(f"   Dataset: {data.x.shape[0]} nodes, {data.edge_index.shape[1]} edges")
+    print(f"   Test set: {data.test_mask.sum().item()} nodes")
+    print(f"   Using SAME test set for ALL models")
 
     model_stats = []
 
@@ -226,11 +246,12 @@ def main():
     )
 
     try:
-        checkpoint = torch.load('../build/models/base_graphsage_best.pth')
+        checkpoint = torch.load(model_dir / 'base_graphsage_best.pth', weights_only=False)
         base_model.load_state_dict(checkpoint['model_state_dict'])
         print("✓ Loaded trained base model")
-    except:
-        print("✗ Warning: Could not load trained base model, using random weights")
+    except Exception as e:
+        print(f"✗ Warning: Could not load trained base model: {e}")
+        print("   Using random weights")
 
     base_acc = evaluate_model(base_model, data)
     base_params = count_parameters(base_model)
@@ -260,15 +281,17 @@ def main():
         hidden_channels=cfg.reduced_hidden_channels,
         out_channels=dataset.num_classes,
         dropout=cfg.reduced_dropout,
-        use_projection=True
+        use_projection=True,
+        root_weight=False  # Use no_root version to match HLS
     )
 
     try:
-        checkpoint = torch.load('../build/models/reduced_graphsage_best.pth')
-        reduced_model.load_state_dict(checkpoint['model_state_dict'])
-        print("✓ Loaded trained reduced model")
-    except:
-        print("✗ Warning: Could not load trained reduced model, using random weights")
+        checkpoint = torch.load(model_dir / 'reduced_graphsage_no_root_best.pth', weights_only=False)
+        reduced_model.load_state_dict(checkpoint.get('model_state_dict', checkpoint))
+        print("✓ Loaded trained reduced model (no_root)")
+    except Exception as e:
+        print(f"✗ Warning: Could not load trained reduced model: {e}")
+        print("   Using random weights")
 
     reduced_acc = evaluate_model(reduced_model, data)
     reduced_params = count_parameters(reduced_model)
@@ -329,7 +352,7 @@ def main():
     print("="*60)
 
     try:
-        qat_checkpoint = torch.load('../build/models/reduced_graphsage_qat_no_root_best.pth', weights_only=False)
+        qat_checkpoint = torch.load(model_dir / 'reduced_graphsage_qat_no_root_best.pth', weights_only=False)
 
         # Reconstruct QAT model
         qat_model = ReducedGraphSAGEQAT(
@@ -403,13 +426,74 @@ def main():
     print(f"    - M=24: Uses 24-bit fixed-point scales (better precision)")
     print(f"    - M=24 with HW rounding matches PTQ-Float exactly (0 LSB error)")
 
-    # 6. Analyze Pruned Model (if exists)
+    # 6. Analyze Brevitas Model (Fixed-Point Quantization)
+    print("\n" + "="*60)
+    print("Analyzing Brevitas Model (Fixed-Point INT8)")
+    print("="*60)
+
+    if BREVITAS_AVAILABLE:
+        try:
+            brevitas_dir = project_root / 'build' / 'brevitas' / 'no_root'
+            
+            # Create and calibrate Brevitas model from float model
+            quant_config = BrevitasQuantConfig(weight_bit_width=8, act_bit_width=8)
+            
+            brevitas_model = BrevitasReducedGraphSAGE(
+                in_channels=dataset.num_features,
+                in_channels_reduced=cfg.reduced_in_channels,
+                hidden_channels=cfg.reduced_hidden_channels,
+                out_channels=dataset.num_classes,
+                dropout=cfg.reduced_dropout,
+                use_projection=True,
+                root_weight=False,
+                quant_config=quant_config
+            )
+            
+            # Load from float model
+            from brevitas_models import load_from_float_model
+            load_from_float_model(brevitas_model, reduced_model)
+            
+            # Calibrate with same data
+            brevitas_model.eval()
+            with torch.no_grad():
+                for _ in range(10):  # 10 calibration passes
+                    _ = brevitas_model(data.x, data.edge_index)
+            
+            # Evaluate on SAME test set as all other models
+            brevitas_acc = evaluate_model(brevitas_model, data)
+            brevitas_params = count_parameters(brevitas_model)
+            brevitas_memory = estimate_model_size(brevitas_model, quantized=True)
+            brevitas_breakdown = get_layer_breakdown(brevitas_model)
+            
+            model_stats.append({
+                'name': 'Brevitas',
+                'accuracy': brevitas_acc,
+                'parameters': brevitas_params,
+                'memory_mb': brevitas_memory,
+                'layer_breakdown': brevitas_breakdown
+            })
+            
+            print(f"  ✓ Created and calibrated Brevitas model")
+            print(f"  Accuracy: {brevitas_acc*100:.2f}%")
+            print(f"  Parameters: {brevitas_params:,}")
+            print(f"  Memory: {brevitas_memory:.2f} MB (INT8)")
+            print(f"  Quantizer: Int8WeightPerTensorFixedPoint (power-of-two scales)")
+            print(f"  Accuracy vs Float: {(reduced_acc - brevitas_acc)*100:+.2f}%")
+        except Exception as e:
+            print(f"  ✗ Could not create Brevitas model: {e}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print("  ✗ Brevitas not available")
+        print("  Install with: pip install brevitas")
+
+    # 7. Analyze Pruned Model (if exists)
     print("\n" + "="*60)
     print("Analyzing Pruned Model")
     print("="*60)
 
     try:
-        pruned_checkpoint = torch.load('../build/models/pruned_graphsage.pth')
+        pruned_checkpoint = torch.load(model_dir / 'pruned_graphsage.pth', weights_only=False)
         arch = pruned_checkpoint['architecture']
 
         pruned_model = ReducedGraphSAGE(
@@ -447,7 +531,7 @@ def main():
     print("Generating Visualization Plots")
     print("="*60)
 
-    os.makedirs('../build/plots', exist_ok=True)
+    os.makedirs(str(project_root / 'build' / 'plots'), exist_ok=True)
 
     # Model comparison
     print("\nGenerating model comparison plot...")

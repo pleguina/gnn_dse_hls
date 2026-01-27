@@ -27,8 +27,7 @@
  *   eff_scale_fp = round((scale_in * scale_w / scale_out) * 2^M)
  */
 
-#ifndef GRAPHSAGE_LAYER_INT8_H
-#define GRAPHSAGE_LAYER_INT8_H
+#pragma once
 
 #include <stdint.h>
 #ifndef __SYNTHESIS__

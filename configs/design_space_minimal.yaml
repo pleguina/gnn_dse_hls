@@ -1,0 +1,45 @@
+# Minimal Design Space Configuration for Testing
+# Use this to verify the DSE pipeline works before running full exploration
+
+# Experiment metadata
+experiment:
+  name: "minimal_dse_test"
+  description: "Quick test of DSE pipeline"
+  output_dir: "build/experiments_test"
+  
+# Search space configuration - minimal for testing
+search_space:
+  # Level 1: Algorithm (model architecture)
+  algorithm:
+    hidden_dim: [24]        # Single value - current model
+    m_bits: [24]            # Single value - current precision
+    
+  # Level 2: Quantization parameters
+  quantization:
+    unroll_factor: [1]      # Single value - matches existing synthesis
+    acc_bits: [32]          # Single value - default
+    
+  # Level 3: HLS optimization pragmas
+  hls:
+    unroll_nodes: [1]       # Match existing synthesis (not fully unrolled)
+    agg_pipeline_ii: [1]    # Single value
+    lin_pipeline_ii: [1]    # Single value
+
+# Constraints
+constraints:
+  max_accuracy_drop: 5.0    # Max 5% accuracy drop from baseline
+  max_dsp_util: 90.0        # Max 90% DSP utilization
+  min_fmax: 300.0           # Min 300 MHz
+  
+# Reference baseline (from current INT8 implementation)
+baseline:
+  model_accuracy: 75.7      # Reduced model accuracy
+  hls_latency_cycles: 56    # Current INT8 latency
+  hls_dsp_count: 6816       # Current INT8 DSP
+
+# Runtime settings
+settings:
+  skip_existing: true       # Skip already-evaluated points
+  timeout_per_point: 1800   # 30 minutes max per design
+  cleanup_hls: true         # Remove intermediate HLS files
+  keep_best: 5              # Keep top N designs

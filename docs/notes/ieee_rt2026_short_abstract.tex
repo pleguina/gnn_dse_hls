@@ -1,0 +1,25 @@
+% IEEE RT 2026 short abstract (text-only, <250 words)
+% Event: 25--29 May 2026, La Biodola - Isola d'Elba (Italy)
+
+\documentclass[10pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+
+\begin{document}
+
+\begin{center}
+{\Large \textbf{Design-Space Exploration and Integer Quantization of Graph Neural Networks for Real-Time FPGA Track Finding}}\\
+\vspace{0.25em}
+{Pelayo Leguina}\
+\end{center}
+
+\noindent\textbf{Abstract (text only, <250 words).} Real-time track finding for displaced-muon signatures must operate under fixed-latency constraints while ingesting high-throughput detector data. Graph neural networks (GNNs) are a natural fit for sparse, irregular geometries and variable occupancy, but mapping message-passing models from PyTorch Geometric to FPGAs requires co-optimizing accuracy, numeric formats, and high-level synthesis (HLS) micro-architecture.
+
+\par
+We present an end-to-end workflow that bridges training and FPGA prototyping for a GraphSAGE-based GNN, with three focus points: (i) automated design-space exploration (DSE) across model shape, quantization parameters, and HLS directives to expose accuracy--latency--resource trade-offs; (ii) post-training and quantization-aware training paths that produce integer test vectors and consistent scaling for message-passing layers; and (iii) a modular C++ implementation synthesized with Vitis HLS and validated via bit-exact C-simulation against the Python reference on representative subgraphs. While the displaced-muon dataset and final track-finder graph definition are in preparation, we use the public Cora citation network as a proxy to develop and stress-test the full toolchain.
+
+\par
+A key practical outcome is an integer-only INT8 implementation with fixed-point scaling and data-driven bit-width optimization, enabling substantial narrowing of internal accumulators and scaling products while preserving functional equivalence in simulation. This establishes a reusable methodology to rapidly iterate towards feasible, fixed-latency FPGA designs for GNN-based track finding once physics-specific graphs and training data are integrated.
+
+\end{document}

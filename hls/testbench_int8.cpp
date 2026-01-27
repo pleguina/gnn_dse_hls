@@ -14,6 +14,11 @@
 #include "graphsage_layer_int8.h"
 #include "graphsage_layer_int8.cpp"  // Include implementation for C simulation
 
+// If K_VALUE isn't provided via build flags, compute it from K_BITS
+#ifndef K_VALUE
+const int K_VALUE = (1 << K_BITS);
+#endif
+
 // ============================================================================
 // Test vector paths (relative to csim build dir: build/hls/graphsage_int8/solution1/csim/build/)
 // ============================================================================
@@ -91,7 +96,7 @@ int main() {
     std::cout << "  HIDDEN_FEATURES = " << HIDDEN_FEATURES << std::endl;
     std::cout << "  OUT_FEATURES = " << OUT_FEATURES << std::endl;
     std::cout << "  M_BITS = " << M_BITS << " (fractional bits)" << std::endl;
-    std::cout << "  K_BITS = " << K_BITS << " (adjacency scale = " << K_VALUE << ")" << std::endl;
+    std::cout << "  K_BITS = " << K_BITS << " (adjacency scale = " << (1 << K_BITS) << ")" << std::endl;
     std::cout << std::endl;
 
     // ========== Declare arrays ==========

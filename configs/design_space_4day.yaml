@@ -1,0 +1,123 @@
+# =============================================================================
+# 4-DAY HLS PARAMETER SWEEP CONFIGURATION
+# =============================================================================
+#
+# Focused DSE for presentation: Vary HLS parameters on single architecture
+# - Fixed architecture: 16×24 (existing trained model)
+# - Vary: M_BITS, bitwidth_margin, unroll_nodes
+# - Expected: 12 design points, ~5-6 hours synthesis time
+#
+# Usage:
+#   python src/explore_design_space.py --config configs/design_space_4day.yaml
+#
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# EXPERIMENT METADATA
+# -----------------------------------------------------------------------------
+experiment:
+  name: "4day_hls_sweep"
+  description: "HLS parameter sweep for IEEE RT 2026 presentation"
+  output_dir: "build/experiments_4day"
+
+# -----------------------------------------------------------------------------
+# EXPLORATION SETTINGS
+# -----------------------------------------------------------------------------
+exploration:
+  strategy: "grid"              # All combinations
+  resume: true                  # Can resume if interrupted
+  max_designs: 0                # Unlimited (we have 12)
+  parallel_hls_jobs: 1          # Sequential (safer)
+  skip_hls: false               # We NEED HLS results
+  hls_estimation_only: false    # Full synthesis required
+
+# -----------------------------------------------------------------------------
+# SEARCH SPACE: FIXED ARCHITECTURE + HLS PARAMETERS
+# -----------------------------------------------------------------------------
+search_space:
+  
+  # LEVEL 1: Algorithm (FIXED - use existing model)
+  algorithm:
+    in_channels_reduced: [16]     # FIXED - existing trained model
+    hidden_channels: [24]         # FIXED - existing trained model
+    dropout: [0.5]                # Standard
+    root_weight: [false]          # Match existing model
+    num_layers: [2]               # Standard GraphSAGE
+  
+  # LEVEL 2: Quantization (VARY for trade-off analysis)
+  quantization:
+    M_BITS: [20, 24]              # 2 values - precision trade-off
+                                  # M=20: narrower multipliers, less DSP
+                                  # M=24: wider multipliers, more precision
+    
+    K_BITS: [12]                  # FIXED - adjacency scaling (2^12)
+    
+    bitwidth_margin: [0, 2]       # 2 values - optimization aggressiveness
+                                  # 0: minimum safe widths (aggressive)
+                                  # 2: +2 bit safety margin (conservative)
+    
+    method: ["symmetric"]         # Standard INT8 symmetric quantization
+    
+  # LEVEL 3: HLS Microarchitecture (VARY for latency/resource trade-off)
+  hls:
+    unroll_nodes: [1, 4, 8]       # 3 values - CRITICAL for latency
+                                  # 1: sequential (low DSP, high latency)
+                                  # 4: partial unroll (balanced)
+                                  # 8: full unroll (high DSP, low latency)
+    
+    # Keep other HLS params fixed for this sweep
+    agg_pipeline_ii: [1]          # No pipelining (simplest)
+    lin_pipeline_ii: [1]          # No pipelining
+    
+    # Resource binding
+    bind_agg: ["dsp"]             # Use DSP blocks for aggregation
+    bind_lin: ["dsp"]             # Use DSP blocks for linear
+    
+    # Target clock
+    target_clock_ns: 2.77         # 361 MHz (Xilinx VU13P typical)
+
+# -----------------------------------------------------------------------------
+# CONSTRAINTS & FILTERING
+# -----------------------------------------------------------------------------
+constraints:
+  max_accuracy_drop: 5.0          # Max 5% accuracy drop from baseline
+  max_dsp_util: 90.0              # Max 90% DSP utilization on VU13P
+  min_fmax: 300.0                 # Min 300 MHz clock frequency
+
+# -----------------------------------------------------------------------------
+# REFERENCE BASELINE (from existing INT8 synthesis)
+# -----------------------------------------------------------------------------
+baseline:
+  model_accuracy: 75.7            # PTQ-INT8 accuracy on Cora
+  hls_latency_cycles: 56          # Current INT8 latency
+  hls_dsp_count: 6816             # Current INT8 DSP usage
+
+# -----------------------------------------------------------------------------
+# RUNTIME SETTINGS
+# -----------------------------------------------------------------------------
+settings:
+  skip_existing: true             # Use cached results if available
+  timeout_per_point: 1800         # 30 min timeout per synthesis
+  cleanup_hls: false              # Keep HLS projects for debugging
+  keep_best: 10                   # Keep top 10 Pareto-optimal designs
+
+# -----------------------------------------------------------------------------
+# EXPECTED DESIGN SPACE SIZE
+# -----------------------------------------------------------------------------
+# Total combinations:
+#   algorithm:     1 (16×24 fixed)
+#   quantization:  2 (M_BITS) × 2 (margin) = 4
+#   hls:           3 (unroll_nodes)
+# 
+# TOTAL: 1 × 4 × 3 = 12 design points
+#
+# Expected synthesis time:
+#   ~20-30 min per point × 12 = 4-6 hours
+#
+# Expected results:
+#   - Unroll=1, M=24: ~56 cycles, ~6,800 DSP (baseline)
+#   - Unroll=4, M=24: ~20 cycles, ~7,800 DSP (4× faster, +15% DSP)
+#   - Unroll=8, M=24: ~12 cycles, ~9,200 DSP (8× faster, +35% DSP)
+#   - M=20 variants: slightly less DSP due to narrower multipliers
+#   - margin=0: slightly less DSP due to optimized bit-widths
+# -----------------------------------------------------------------------------

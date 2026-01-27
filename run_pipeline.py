@@ -36,7 +36,7 @@ def main():
     parser.add_argument('--skip-analysis', action='store_true',
                        help='Skip model analysis and plotting')
     parser.add_argument('--steps', type=str, default='all',
-                       help='Comma-separated steps to run: train,train_qat,subgraph,prune,quant,quant_qat,int8_ptq,vectors,analyze,all')
+                       help='Comma-separated steps to run: train,train_qat,subgraph,prune,quant,quant_qat,int8_ptq,brevitas,vectors,analyze,all')
 
     args = parser.parse_args()
 
@@ -150,6 +150,25 @@ def main():
         if not success:
             print("\n[WARNING] Integer-only emulator failed, but continuing...")
 
+    # Step 4d: Brevitas Quantization
+    if run_all or 'brevitas' in steps_to_run:
+        # Quantize with Brevitas (no root_weight, HLS-compatible)
+        success = run_command(
+            f"cd src && {python_cmd} brevitas_quantization.py",
+            "Brevitas: Quantizing Model (QAT-ready quantization)"
+        )
+        if not success:
+            print("\n[WARNING] Brevitas quantization failed, but continuing...")
+        
+        # Quantize with root_weight variant
+        success = run_command(
+            f"cd src && {python_cmd} brevitas_quantization.py --root-weight",
+            "Brevitas: Quantizing Model (with root_weight)"
+        )
+        if not success:
+            print("\n[WARNING] Brevitas with root_weight failed, but continuing...")
+
+
     # Step 5: Generate all test vectors (FLOAT, PTQ, QAT)
     if run_all or 'vectors' in steps_to_run:
         # Generate FLOAT test vectors (for float HLS validation)
@@ -196,7 +215,14 @@ def main():
     print("  - build/models/4_qat_no_root.pth")
     print("  - build/weights_qat/ (weights and biases)")
     print("  - build/test_vectors_qat/ (test vectors and scales)")
-    print("\n4. VISUALIZATION AND ANALYSIS:")
+    print("\n4. BREVITAS (QAT-ready quantization path):")
+    print("  - build/brevitas/no_root/ (HLS-compatible variant)")
+    print("  - build/brevitas/with_root/ (with root_weight)")
+    print("  - model_brevitas.pth (quantized model state dict)")
+    print("  - quant_config.json (bit widths and configuration)")
+    print("  - weights/ (quantized weights and biases)")
+    print("  - debug/ (quantization scales)")
+    print("\n5. VISUALIZATION AND ANALYSIS:")
     print("  - build/plots/ (training curves and comparisons)")
     print("  - build/subgraph/")
     print("  - build/hls/weights.h")
@@ -212,6 +238,9 @@ def main():
     print("\n  QAT (recommended for best accuracy):")
     print("    - build/weights_qat/")
     print("    - build/test_vectors_qat/")
+    print("\n  BREVITAS (QAT-ready, flexible bit widths):")
+    print("    - build/brevitas/no_root/ (HLS-compatible)")
+    print("    - build/brevitas/with_root/")
     print("\nNext steps:")
     print("  1. Review training plots in build/plots/")
     print("  2. Compare FLOAT vs PTQ vs INT8-PTQ vs QAT accuracy")

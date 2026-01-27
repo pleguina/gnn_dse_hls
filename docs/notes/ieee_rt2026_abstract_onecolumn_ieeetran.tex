@@ -1,0 +1,29 @@
+\documentclass[onecolumn]{IEEEtran}
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp,nicefrac}
+
+\markboth{IEEE REAL TIME CONFERENCE 2026}{}
+
+\begin{document}
+
+\title{Design-Space Exploration and Integer Quantization of Graph Neural Networks for Real-Time FPGA Track Finding}
+
+\author{P.\ Leguina, S.\ Folgueras, A.\ Cardini, E.\ Aller, \emph{on behalf of the CMS Collaboration}\\
+Universidad de Oviedo -- ICTEA\\
+\texttt{leguinapelayo@uniovi.es}
+}
+
+\maketitle
+
+\begin{abstract}
+Real-time track finding for displaced-muon signatures must meet strict, fixed-latency constraints while processing high-rate detector data. Graph neural networks (GNNs) provide an efficient representation for sparse and irregular detector geometries, but mapping message-passing layers from PyTorch Geometric to field-programmable gate arrays (FPGAs) requires explicit co-design of numerical formats, data movement, and high-level synthesis (HLS) micro-architecture.
+
+We present an end-to-end workflow that bridges model development and FPGA prototyping for a GraphSAGE-based GNN. The pipeline supports reduced, hardware-oriented model variants; post-training quantization (PTQ) and quantization-aware training (QAT) paths that generate consistent integer parameters and test vectors; and a modular C++ implementation synthesized with Vitis HLS and validated through C-simulation against the Python reference on representative subgraphs. A design-space exploration (DSE) engine sweeps algorithmic choices (e.g., hidden dimensions and fixed-point precision) and implementation parameters (e.g., unrolling and pipelining directives), enabling systematic exploration of accuracy--latency--resource trade-offs.
+
+While a displaced-muon dataset and final track-finder graph definition are under development, we use the public Cora citation network as a proxy to validate the complete toolchain end-to-end. A key practical outcome is an integer-only INT8 implementation with fixed-point scaling and data-driven bit-width optimization, which narrows internal accumulators and scaling products while preserving functional equivalence in simulation.
+\end{abstract}
+
+\end{document}
