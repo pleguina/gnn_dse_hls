@@ -64,9 +64,9 @@ def extract_fixed_subgraph(data, num_nodes=32, center_node=None, num_hops=2):
     adj_matrix[edge_index[1], edge_index[0]] = 1.0
 
     # Normalize adjacency matrix for SAGEConv mean aggregation
-    # SAGEConv with aggr='mean' does NOT add self-loops automatically
-    # It simply divides by the number of incoming neighbors
-    # So we row-normalize: adj[i,j] = 1/degree(i) if there's an edge j->i
+    # SAGEConv with aggr='mean' does NOT add self-loops automatically.
+    # It divides by the number of incoming neighbors.
+    # Row-normalize: adj[i,j] = 1/degree(i) if there's an edge j->i
     deg = adj_matrix.sum(dim=1)  # Incoming degree per node
     deg_inv = 1.0 / deg
     deg_inv[deg_inv == float('inf')] = 0  # Handle isolated nodes

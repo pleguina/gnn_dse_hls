@@ -145,8 +145,25 @@ def compute_pareto_front(results: List[Dict], objectives: List[ParetoObjective])
     return pareto_indices
 
 
-def plot_pareto_2d(results: List[Dict], 
-                   obj_x: ParetoObjective, 
+def get_design_label(design: Dict) -> str:
+    """Generate meaningful short label for a design"""
+    hc = design.get('hidden_channels', '?')
+    uo = design.get('unroll_outputs', 1)
+    un = design.get('unroll_nodes', 1)
+    ufa = design.get('unroll_features_agg', 1)
+    ufl = design.get('unroll_features_lin', 1)
+    
+    # Format unroll factors: 0 means complete unroll, shown as 'C'
+    un_str = 'C' if un == 0 else str(un)
+    ufa_str = 'C' if ufa == 0 else str(ufa)
+    ufl_str = 'C' if ufl == 0 else str(ufl)
+    uo_str = 'P' if uo == 1 else 'U'  # P=pipeline, U=unroll
+    
+    return f"{hc}_{un_str}.{ufa_str}.{ufl_str}_{uo_str}"
+
+
+def plot_pareto_2d(results: List[Dict],
+                   obj_x: ParetoObjective,
                    obj_y: ParetoObjective,
                    output_path: Optional[Path] = None,
                    show: bool = True,
@@ -157,41 +174,58 @@ def plot_pareto_2d(results: List[Dict],
     # Extract values
     x_vals = [r.get(obj_x.name, 0) for r in results]
     y_vals = [r.get(obj_y.name, 0) for r in results]
-    names = [r.get('design_id', f'design_{i}') for i, r in enumerate(results)]
+    names = [get_design_label(r) for r in results]
     
-    fig, ax = plt.subplots(figsize=(10, 8))
+    fig, ax = plt.subplots(figsize=(12, 9))
+    
+    # Extract color grouping by unroll_outputs and hidden_channels
+    unroll_outputs = [r.get('unroll_outputs', 1) for r in results]
+    hidden_channels = [r.get('hidden_channels', 16) for r in results]
+    
+    # Create color map: combine outputs and hidden_channels
+    # Color by: hidden_16_pipeline, hidden_16_unroll, hidden_24_pipeline, hidden_24_unroll
+    colors = []
+    color_map = {
+        (16, 1): '#3498db',  # 16 hidden, pipeline - blue
+        (16, 0): '#e74c3c',  # 16 hidden, unroll - red
+        (24, 1): '#2ecc71',  # 24 hidden, pipeline - green
+        (24, 0): '#f39c12',  # 24 hidden, unroll - orange
+    }
+    for hc, uo in zip(hidden_channels, unroll_outputs):
+        colors.append(color_map.get((hc, uo), '#95a5a6'))  # gray default
     
     # Compute Pareto front
     if highlight_pareto:
         pareto_idx = compute_pareto_front(results, [obj_x, obj_y])
         pareto_set = set(pareto_idx)
         
-        # Plot non-Pareto points
+        # Plot non-Pareto points with parameter-based colors
         non_pareto_x = [x_vals[i] for i in range(len(results)) if i not in pareto_set]
         non_pareto_y = [y_vals[i] for i in range(len(results)) if i not in pareto_set]
-        ax.scatter(non_pareto_x, non_pareto_y, c='lightgray', s=60, alpha=0.6, 
-                   label='Dominated', edgecolors='gray', linewidth=0.5)
+        non_pareto_c = [colors[i] for i in range(len(results)) if i not in pareto_set]
+        ax.scatter(non_pareto_x, non_pareto_y, c=non_pareto_c, s=60, alpha=0.4, 
+                   edgecolors='gray', linewidth=0.5)
         
-        # Plot Pareto points
+        # Plot Pareto points with parameter-based colors
         pareto_x = [x_vals[i] for i in pareto_idx]
         pareto_y = [y_vals[i] for i in pareto_idx]
-        ax.scatter(pareto_x, pareto_y, c='#e74c3c', s=120, alpha=0.9,
-                   label='Pareto-optimal', edgecolors='black', linewidth=1, zorder=5)
+        pareto_c = [colors[i] for i in pareto_idx]
+        ax.scatter(pareto_x, pareto_y, c=pareto_c, s=150, alpha=0.95,
+                   edgecolors='black', linewidth=2, zorder=5)
         
         # Connect Pareto front with line (sorted)
         if len(pareto_idx) > 1:
             pareto_points = sorted(zip(pareto_x, pareto_y), key=lambda p: p[0])
             px, py = zip(*pareto_points)
-            ax.plot(px, py, 'r--', alpha=0.5, linewidth=2, label='Pareto front')
+            ax.plot(px, py, 'k--', alpha=0.3, linewidth=1.5, zorder=4)
         
-        # Label Pareto points
+        # Label Pareto points with meaningful names
         for i in pareto_idx:
-            short_name = names[i].split('_')[0] if '_' in names[i] else names[i][:10]
-            ax.annotate(short_name, (x_vals[i], y_vals[i]), 
+            ax.annotate(names[i], (x_vals[i], y_vals[i]), 
                        xytext=(5, 5), textcoords='offset points',
-                       fontsize=8, alpha=0.8)
+                       fontsize=7, alpha=0.9, fontweight='bold')
     else:
-        ax.scatter(x_vals, y_vals, c='#3498db', s=80, alpha=0.7,
+        ax.scatter(x_vals, y_vals, c=colors, s=80, alpha=0.7,
                    edgecolors='black', linewidth=0.5)
     
     # Labels and formatting
@@ -210,7 +244,18 @@ def plot_pareto_2d(results: List[Dict],
     else:
         ax.set_title(f'{obj_y.label} vs {obj_x.label}', fontsize=14, fontweight='bold')
     
-    ax.legend(loc='best', fontsize=10)
+    # Create custom legend for parameter groups
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor='#3498db', edgecolor='black', label='16 hidden, Pipeline'),
+        Patch(facecolor='#e74c3c', edgecolor='black', label='16 hidden, Unroll outputs'),
+        Patch(facecolor='#2ecc71', edgecolor='black', label='24 hidden, Pipeline'),
+        Patch(facecolor='#f39c12', edgecolor='black', label='24 hidden, Unroll outputs'),
+    ]
+    if highlight_pareto:
+        legend_elements.append(Patch(facecolor='white', edgecolor='black', linewidth=2, label='Pareto-optimal (thick border)'))
+    
+    ax.legend(handles=legend_elements, loc='best', fontsize=9)
     ax.grid(alpha=0.3)
     
     # Add arrows to indicate optimization direction

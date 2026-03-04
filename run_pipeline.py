@@ -31,12 +31,10 @@ def main():
     parser = argparse.ArgumentParser(description='Run GraphSAGE FPGA pipeline')
     parser.add_argument('--skip-training', action='store_true',
                        help='Skip model training (use existing models)')
-    parser.add_argument('--skip-pruning', action='store_true',
-                       help='Skip pruning step')
     parser.add_argument('--skip-analysis', action='store_true',
                        help='Skip model analysis and plotting')
     parser.add_argument('--steps', type=str, default='all',
-                       help='Comma-separated steps to run: train,train_qat,subgraph,prune,quant,quant_qat,int8_ptq,brevitas,vectors,analyze,all')
+                       help='Comma-separated steps to run: train,train_qat,subgraph,quant,quant_qat,int8_ptq,brevitas,vectors,analyze,all')
 
     args = parser.parse_args()
 
@@ -87,15 +85,6 @@ def main():
         )
         if not success:
             return 1
-
-    # Step 3: Apply pruning (optional)
-    if (run_all or 'prune' in steps_to_run) and not args.skip_pruning:
-        success = run_command(
-            f"cd src && {python_cmd} pruning.py",
-            "Applying Structured Pruning"
-        )
-        if not success:
-            print("\n[WARNING] Pruning failed, but continuing...")
 
     # Step 4: Quantize model with PTQ (Post-Training Quantization)
     if run_all or 'quant' in steps_to_run:

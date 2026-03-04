@@ -71,9 +71,8 @@ def make_quant_linear(
         quant_config = BrevitasQuantConfig()
 
     if quant_config.enable_bias_quant:
-        # IMPORTANT:
         # QuantLinear.bias_quant expects a bias quantizer class/callable, not a dict.
-        # You can add one later once you decide the exact bias quantizer.
+        # A bias quantizer must be implemented before enabling this option.
         raise NotImplementedError(
             "Bias quantization is enabled, but no bias quantizer is configured. "
             "Keep enable_bias_quant=False for now."

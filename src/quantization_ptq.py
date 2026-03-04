@@ -6,8 +6,12 @@ Implements INT8 quantization for weights and activations.
 import torch
 import numpy as np
 import json
+from pathlib import Path
 from model_base import ReducedGraphSAGE
 from config import get_config
+
+# Get project root (parent of src directory)
+PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 
 class QuantizationParams:
@@ -30,7 +34,7 @@ class QuantizationParams:
             json.dump(data, f, indent=2)
 
 
-def quantize_tensor(tensor, num_bits=8, symmetric=True):
+def quantize_tensor(tensor, num_bits=8, symmetric=True, power_of_two_scale=False):
     """
     Quantize a tensor to int representation.
 
@@ -38,17 +42,39 @@ def quantize_tensor(tensor, num_bits=8, symmetric=True):
         tensor: Input tensor to quantize
         num_bits: Number of bits for quantization (default 8 for int8)
         symmetric: Use symmetric quantization (zero_point=0)
+        power_of_two_scale: If True, round scale to nearest power of 2.
+                           This enables bit-shift instead of multiply in HLS!
+                           Uses ceil(log2) to avoid clipping.
 
     Returns:
         quantized: Quantized tensor (int representation)
-        scale: Quantization scale
+        scale: Quantization scale (power-of-two if power_of_two_scale=True)
         zero_point: Quantization zero point
+    
+    Hardware Implications:
+        - power_of_two_scale=False: Requires multiplier for dequantization
+        - power_of_two_scale=True:  Only needs bit-shift (saves DSP resources!)
+          
+        Example with scale=0.015625 (= 2^-6):
+          dequant = int8_val >> 6  (just a bit shift!)
     """
+    import math
+    
     if symmetric:
         # Symmetric quantization: zero_point = 0
         max_val = max(abs(tensor.min().item()), abs(tensor.max().item()))
-        qmax = 2 ** (num_bits - 1) - 1  # 127 for int8
-        scale = max_val / qmax if max_val != 0 else 1.0
+        qmax = 2 ** (num_bits - 1) - 1  # 127 for int8, 7 for int4, etc.
+        
+        if max_val == 0:
+            scale = 1.0
+        else:
+            scale = max_val / qmax
+            
+            if power_of_two_scale:
+                # Round to power of two (use ceil to avoid clipping)
+                log2_scale = math.log2(scale)
+                scale = 2 ** math.ceil(log2_scale)
+        
         zero_point = 0
     else:
         # Asymmetric quantization
@@ -57,16 +83,30 @@ def quantize_tensor(tensor, num_bits=8, symmetric=True):
         qmin = -(2 ** (num_bits - 1))  # -128 for int8
         qmax = 2 ** (num_bits - 1) - 1  # 127 for int8
         scale = (max_val - min_val) / (qmax - qmin) if max_val != min_val else 1.0
+        
+        if power_of_two_scale:
+            log2_scale = math.log2(scale) if scale > 0 else 0
+            scale = 2 ** math.ceil(log2_scale)
+        
         zero_point = qmin - int(min_val / scale)
 
     # Quantize
+    qmin = -(2 ** (num_bits - 1))
+    qmax = 2 ** (num_bits - 1) - 1
+    
     quantized = torch.clamp(
         torch.round(tensor / scale) + zero_point,
-        -(2 ** (num_bits - 1)),
-        2 ** (num_bits - 1) - 1
+        qmin,
+        qmax
     )
 
-    return quantized.to(torch.int8), scale, zero_point
+    # Choose appropriate dtype
+    if num_bits <= 8:
+        quantized = quantized.to(torch.int8)
+    else:
+        quantized = quantized.to(torch.int16)
+
+    return quantized, scale, zero_point
 
 
 def dequantize_tensor(quantized, scale, zero_point):
@@ -191,33 +231,43 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Quantize GraphSAGE model')
     parser.add_argument('--use-root-weight', action='store_true', 
                        help='Use model with root_weight=True (default is False for HLS)')
+    parser.add_argument('--in-channels', type=int, default=16,
+                       help='Input feature dimension after projection (default: 16)')
+    parser.add_argument('--hidden-channels', type=int, default=24,
+                       help='Hidden layer dimension (default: 24)')
+    parser.add_argument('--output-dir', type=str, default=None,
+                       help='Output directory for quantized weights (default: build/weights_ptq_float[_with_root])')
     args = parser.parse_args()
     
     root_weight = args.use_root_weight
+    in_channels = args.in_channels
+    hidden_channels = args.hidden_channels
+    arch_key = f"{in_channels}x{hidden_channels}"
+    
     suffix = "" if root_weight else "_no_root"
-    model_path = f'../build/models/reduced_graphsage{suffix}_best.pth'
+    model_path = PROJECT_ROOT / 'build/models' / f'reduced_graphsage{suffix}_{arch_key}_best.pth'
     
     print(f"Using model: {model_path}")
+    print(f"Architecture: {in_channels} → {hidden_channels} → 7")
     print(f"root_weight = {root_weight}")
     if not root_weight:
         print("NOTE: This is the HLS-compatible version (simpler formula)")
     
-    # Load configuration
+    # Load configuration (for num_features only)
     cfg = get_config()
 
-    # Load reduced model
+    # Load reduced model with specified architecture
     model = ReducedGraphSAGE(
         in_channels=cfg.num_features,
-        in_channels_reduced=cfg.reduced_in_channels,
-        hidden_channels=cfg.reduced_hidden_channels,
+        in_channels_reduced=in_channels,
+        hidden_channels=hidden_channels,
         out_channels=cfg.num_classes,
         dropout=cfg.reduced_dropout,
         use_projection=True,
         root_weight=root_weight
     )
 
-    print(f"📋 Using config: reduced_model")
-    print(f"   Architecture: {cfg.reduced_in_channels} → {cfg.reduced_hidden_channels} → {cfg.num_classes}")
+    print(f"📋 Architecture: {in_channels} → {hidden_channels} → {cfg.num_classes}")
 
     # Load trained weights
     try:
@@ -233,22 +283,25 @@ if __name__ == '__main__':
     quantized_weights, quant_params = quantize_model_weights(model, num_bits=8)
 
     # Save quantized weights with new naming convention
-    if root_weight:
-        output_dir = '../build/weights_ptq_float_with_root'
+    # Determine output directory
+    if args.output_dir:
+        output_dir = args.output_dir
+    elif root_weight:
+        output_dir = str(PROJECT_ROOT / 'build/weights_ptq_float_with_root')
     else:
-        output_dir = '../build/weights_ptq_float'
+        output_dir = str(PROJECT_ROOT / 'build/weights_ptq_float')
     save_quantized_weights(quantized_weights, quant_params, output_dir=output_dir)
 
     # Prepare model dimensions
     model_dims = {
-        'in_features': 16,          # After projection
-        'hidden_features': 24,       # Conv1 output
-        'out_features': 7,           # Number of classes
-        'num_nodes': 32             # Max nodes for FPGA
+        'in_features': in_channels,
+        'hidden_features': hidden_channels,
+        'out_features': 7,
+        'num_nodes': 32
     }
 
     # Export as C header with dimensions
-    header_path = f'../build/hls/weights{suffix}.h'
+    header_path = str(PROJECT_ROOT / 'build/hls' / f'weights{suffix}.h')
     export_weights_as_c_header(quantized_weights, quant_params, 
                                header_file=header_path, model_dims=model_dims)
 

@@ -38,7 +38,11 @@ def get_build_structure():
             'patterns': ['*.txt', '*.txt.shape', '*.json'],
         },
         'build/weights_ptq_int8': {
-            'description': 'PTQ integer-only parameters',
+            'description': 'PTQ integer-only parameters (legacy shared)',
+            'patterns': ['*.txt', '*.txt.shape', '*.json'],
+        },
+        'build/weights_ptq_per_arch': {
+            'description': 'PTQ parameters per-architecture',
             'patterns': ['*.txt', '*.txt.shape', '*.json'],
         },
         'build/weights_qat': {
@@ -54,20 +58,33 @@ def get_build_structure():
             'patterns': ['*.txt', '*.json'],
         },
         'build/test_vectors_ptq_int8': {
-            'description': 'PTQ integer-only test vectors',
+            'description': 'PTQ integer-only test vectors (legacy)',
+            'patterns': ['*.txt', '*.json'],
+        },
+        'build/test_vectors_ptq_int8_po2': {
+            'description': 'PTQ INT8 PO2 test vectors (legacy)',
+            'patterns': ['*.txt', '*.json'],
+        },
+        'build/test_vectors_arch': {
+            'description': 'Architecture-specific test vectors',
             'patterns': ['*.txt', '*.json'],
         },
         'build/test_vectors_qat': {
             'description': 'QAT test vectors',
             'patterns': ['*.txt', '*.json'],
         },
+        'build/experiments': {
+            'description': 'Design space exploration results',
+            'patterns': ['*.json', '*.csv', '*.log'],
+        },
         'build/subgraph': {
             'description': 'Extracted subgraph data',
             'patterns': ['*.txt', '*.json', '*.pt'],
         },
         'build/hls': {
-            'description': 'HLS header files',
-            'patterns': ['*.h', '*.hpp', '*.txt'],
+            'description': 'HLS synthesis projects and generated files',
+            'patterns': ['*.h', '*.hpp', '*.txt', '*.json'],
+            'subdirs_to_remove': ['dse_*', 'graphsage_*'],  # Remove HLS project directories
         },
         'build': {
             'description': 'Build root files',
@@ -77,12 +94,24 @@ def get_build_structure():
     }
 
 
-def count_files_in_dir(directory, patterns=None, root_only=False):
-    """Count files matching patterns in directory."""
+def count_files_in_dir(directory, patterns=None, root_only=False, subdirs_to_remove=None):
+    """Count files and directories matching patterns in directory."""
     if not os.path.exists(directory):
         return 0
 
     count = 0
+    
+    # Count subdirectories to be removed
+    if subdirs_to_remove:
+        import fnmatch
+        for item in os.listdir(directory):
+            item_path = os.path.join(directory, item)
+            if os.path.isdir(item_path):
+                for pattern in subdirs_to_remove:
+                    if fnmatch.fnmatch(item, pattern):
+                        count += 1
+                        break
+    
     if root_only:
         # Only count files directly in this directory
         for item in os.listdir(directory):
@@ -106,7 +135,7 @@ def count_files_in_dir(directory, patterns=None, root_only=False):
     return count
 
 
-def clean_directory(directory, patterns=None, root_only=False, dry_run=False):
+def clean_directory(directory, patterns=None, root_only=False, dry_run=False, subdirs_to_remove=None):
     """
     Clean files in directory matching patterns.
 
@@ -115,14 +144,32 @@ def clean_directory(directory, patterns=None, root_only=False, dry_run=False):
         patterns: List of file patterns to match (e.g., ['*.pth', '*.txt'])
         root_only: If True, only clean files in root directory, not subdirectories
         dry_run: If True, only show what would be deleted
+        subdirs_to_remove: List of directory patterns to remove completely (e.g., ['dse_*'])
 
     Returns:
-        Number of files deleted
+        Number of files/directories deleted
     """
     if not os.path.exists(directory):
         return 0
 
     deleted_count = 0
+    
+    # First, handle subdirectory removal if specified
+    if subdirs_to_remove:
+        import fnmatch
+        for item in os.listdir(directory):
+            item_path = os.path.join(directory, item)
+            if os.path.isdir(item_path):
+                # Check if directory matches any pattern
+                for pattern in subdirs_to_remove:
+                    if fnmatch.fnmatch(item, pattern):
+                        if dry_run:
+                            print(f"  Would remove directory: {item_path}")
+                        else:
+                            shutil.rmtree(item_path)
+                            print(f"  Removed directory: {item_path}")
+                        deleted_count += 1
+                        break
 
     if root_only:
         # Only clean files directly in this directory
@@ -211,10 +258,11 @@ Examples:
                 file_count = count_files_in_dir(
                     directory,
                     config.get('patterns'),
-                    config.get('root_only', False)
+                    config.get('root_only', False),
+                    subdirs_to_remove=config.get('subdirs_to_remove')
                 )
                 total_files += file_count
-                status = f"{file_count} files" if file_count > 0 else "empty"
+                status = f"{file_count} items" if file_count > 0 else "empty"
                 print(f"\n{directory}/")
                 print(f"  Description: {config['description']}")
                 print(f"  Status: {status}")
@@ -274,13 +322,14 @@ Examples:
             file_count = count_files_in_dir(
                 directory,
                 config.get('patterns'),
-                config.get('root_only', False)
+                config.get('root_only', False),
+                subdirs_to_remove=config.get('subdirs_to_remove')
             )
             if file_count > 0:
                 total_files += file_count
                 print(f"\n{directory}/")
                 print(f"  {config['description']}")
-                print(f"  Files to clean: {file_count}")
+                print(f"  Items to clean: {file_count}")
 
     if total_files == 0:
         print("\n✓ Nothing to clean! Build folder is already clean.")
@@ -308,11 +357,12 @@ Examples:
                 directory,
                 config.get('patterns'),
                 config.get('root_only', False),
-                dry_run=args.dry_run
+                dry_run=args.dry_run,
+                subdirs_to_remove=config.get('subdirs_to_remove')
             )
             total_deleted += deleted
             if deleted > 0:
-                print(f"  ✓ Cleaned {deleted} files")
+                print(f"  ✓ Cleaned {deleted} items")
             else:
                 print(f"  ✓ Already clean")
 

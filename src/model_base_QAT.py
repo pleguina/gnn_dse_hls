@@ -221,13 +221,13 @@ class SAGEConvQAT(MessagePassing):
         # propagate_type: (x: OptPairTensor)
         out = self.propagate(edge_index, x=x, size=size)
 
-        # Fake-quant aggregated features (this is what HW will store as INT8)
+        # Fake-quant aggregated features (maps to INT8 in HW)
         out = self.act_agg_fake_quant(out)
 
         # --- Weight quantization and linear transform (left branch) ---
         # Quantize lin_l weights (and biases if desired; typically biases stay fp32)
         w_l_q = self.w_l_fake_quant(self.lin_l.weight)
-        b_l = self.lin_l.bias  # kept as float in QAT; later you convert to int32 domain
+        b_l = self.lin_l.bias  # kept as float during QAT; converted to int32 at export
 
         # Perform linear: out = out @ W_l^T + b_l
         out = F.linear(out, w_l_q, b_l)
@@ -243,7 +243,7 @@ class SAGEConvQAT(MessagePassing):
             # lin_r has no bias in SAGEConv
             out = out + F.linear(x_r_q, w_r_q, None)
 
-        # Fake-quant final output activations (this is what next layer will see as INT8)
+        # Fake-quant final output activations (next layer reads as INT8)
         out = self.act_out_fake_quant(out)
 
         if self.normalize:

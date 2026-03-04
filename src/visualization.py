@@ -17,6 +17,60 @@ plt.rcParams['figure.figsize'] = (10, 6)
 plt.rcParams['font.size'] = 10
 
 
+def _smart_rotate_labels(ax, names, threshold=6):
+    """
+    Smart rotation for x-axis labels based on number of items and label lengths.
+    Prevents label overlap on bar charts.
+    """
+    max_len = max(len(name) for name in names) if names else 0
+    num_labels = len(names)
+    
+    if num_labels > 10 or max_len > 12:
+        rotation = 45
+        ha = 'right'
+    elif num_labels > threshold or max_len > 8:
+        rotation = 30
+        ha = 'right'
+    else:
+        rotation = 0
+        ha = 'center'
+    
+    ax.set_xticklabels(names, rotation=rotation, ha=ha)
+    return rotation
+
+
+def _smart_annotate_scatter(ax, names, x_vals, y_vals, colors=None):
+    """
+    Smart annotation for scatter plots that avoids label overlap.
+    Uses adjustText library if available, otherwise manual offsets.
+    """
+    # Calculate data range for offset scaling
+    x_range = max(x_vals) - min(x_vals) if len(x_vals) > 1 else 1
+    y_range = max(y_vals) - min(y_vals) if len(y_vals) > 1 else 1
+    
+    # Create annotations with alternating offsets to reduce overlap
+    offsets = [
+        (8, 8), (-8, 8), (8, -12), (-8, -12),
+        (12, 0), (-12, 0), (0, 12), (0, -12),
+        (10, 5), (-10, 5), (10, -5), (-10, -5)
+    ]
+    
+    annotations = []
+    for i, (name, x, y) in enumerate(zip(names, x_vals, y_vals)):
+        offset = offsets[i % len(offsets)]
+        ann = ax.annotate(
+            name, (x, y),
+            xytext=offset,
+            textcoords='offset points',
+            fontsize=8,
+            bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.7, edgecolor='gray'),
+            arrowprops=dict(arrowstyle='-', color='gray', alpha=0.5) if len(names) > 6 else None
+        )
+        annotations.append(ann)
+    
+    return annotations
+
+
 def plot_training_curves(history, save_path='../build/plots/training_curves.png'):
     """
     Plot training and validation curves.
@@ -64,7 +118,11 @@ def plot_model_comparison(model_stats, save_path='../build/plots/model_compariso
     """
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+    # Adaptive figure size based on number of models
+    num_models = len(model_stats)
+    fig_width = max(16, 12 + num_models * 0.5)
+    fig_height = max(5, 4 + num_models * 0.1)
+    fig, axes = plt.subplots(1, 3, figsize=(fig_width, fig_height))
 
     names = [stat['name'] for stat in model_stats]
     accuracies = [stat['accuracy'] for stat in model_stats]
@@ -74,43 +132,47 @@ def plot_model_comparison(model_stats, save_path='../build/plots/model_compariso
     colors = sns.color_palette("husl", len(names))
 
     # Accuracy comparison
-    bars1 = axes[0].bar(names, accuracies, color=colors, alpha=0.7, edgecolor='black')
+    bars1 = axes[0].bar(range(len(names)), accuracies, color=colors, alpha=0.7, edgecolor='black')
     axes[0].set_ylabel('Test Accuracy')
     axes[0].set_title('Model Accuracy Comparison')
     axes[0].set_ylim([0, 1.0])
     axes[0].grid(True, alpha=0.3, axis='y')
+    axes[0].set_xticks(range(len(names)))
 
-    # Add value labels on bars
+    # Add value labels on bars (smaller font for many models)
+    label_fontsize = max(6, 9 - num_models // 4)
     for bar, acc in zip(bars1, accuracies):
         height = bar.get_height()
         axes[0].text(bar.get_x() + bar.get_width()/2., height,
-                    f'{acc:.3f}', ha='center', va='bottom', fontsize=9)
+                    f'{acc:.3f}', ha='center', va='bottom', fontsize=label_fontsize)
 
     # Parameters comparison
-    bars2 = axes[1].bar(names, parameters, color=colors, alpha=0.7, edgecolor='black')
+    bars2 = axes[1].bar(range(len(names)), parameters, color=colors, alpha=0.7, edgecolor='black')
     axes[1].set_ylabel('Parameters (K)')
     axes[1].set_title('Model Size (Parameters)')
     axes[1].grid(True, alpha=0.3, axis='y')
+    axes[1].set_xticks(range(len(names)))
 
     for bar, param in zip(bars2, parameters):
         height = bar.get_height()
         axes[1].text(bar.get_x() + bar.get_width()/2., height,
-                    f'{param:.1f}K', ha='center', va='bottom', fontsize=9)
+                    f'{param:.1f}K', ha='center', va='bottom', fontsize=label_fontsize)
 
     # Memory comparison
-    bars3 = axes[2].bar(names, memory, color=colors, alpha=0.7, edgecolor='black')
+    bars3 = axes[2].bar(range(len(names)), memory, color=colors, alpha=0.7, edgecolor='black')
     axes[2].set_ylabel('Memory (MB)')
     axes[2].set_title('Model Memory Footprint')
     axes[2].grid(True, alpha=0.3, axis='y')
+    axes[2].set_xticks(range(len(names)))
 
     for bar, mem in zip(bars3, memory):
         height = bar.get_height()
         axes[2].text(bar.get_x() + bar.get_width()/2., height,
-                    f'{mem:.2f}MB', ha='center', va='bottom', fontsize=9)
+                    f'{mem:.3f}', ha='center', va='bottom', fontsize=label_fontsize)
 
-    # Rotate x-axis labels if needed
+    # Smart label rotation for all axes
     for ax in axes:
-        ax.tick_params(axis='x', rotation=15)
+        _smart_rotate_labels(ax, names)
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
@@ -128,7 +190,10 @@ def plot_efficiency_analysis(model_stats, save_path='../build/plots/efficiency_a
     """
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    # Adaptive figure size
+    num_models = len(model_stats)
+    fig_width = max(14, 12 + num_models * 0.3)
+    fig, axes = plt.subplots(1, 2, figsize=(fig_width, 7))
 
     names = [stat['name'] for stat in model_stats]
     accuracies = [stat['accuracy'] * 100 for stat in model_stats]  # Convert to percentage
@@ -139,9 +204,7 @@ def plot_efficiency_analysis(model_stats, save_path='../build/plots/efficiency_a
 
     # Accuracy vs Parameters
     axes[0].scatter(parameters, accuracies, s=200, c=colors, alpha=0.7, edgecolors='black', linewidths=2)
-    for i, name in enumerate(names):
-        axes[0].annotate(name, (parameters[i], accuracies[i]),
-                        xytext=(5, 5), textcoords='offset points', fontsize=9)
+    _smart_annotate_scatter(axes[0], names, parameters, accuracies, colors)
     axes[0].set_xlabel('Model Parameters (K)')
     axes[0].set_ylabel('Test Accuracy (%)')
     axes[0].set_title('Accuracy vs Model Size\n(Higher & Left is Better)')
@@ -149,9 +212,7 @@ def plot_efficiency_analysis(model_stats, save_path='../build/plots/efficiency_a
 
     # Accuracy vs Memory
     axes[1].scatter(memory, accuracies, s=200, c=colors, alpha=0.7, edgecolors='black', linewidths=2)
-    for i, name in enumerate(names):
-        axes[1].annotate(name, (memory[i], accuracies[i]),
-                        xytext=(5, 5), textcoords='offset points', fontsize=9)
+    _smart_annotate_scatter(axes[1], names, memory, accuracies, colors)
     axes[1].set_xlabel('Memory Footprint (MB)')
     axes[1].set_ylabel('Test Accuracy (%)')
     axes[1].set_title('Accuracy vs Memory Usage\n(Higher & Left is Better)')
@@ -287,7 +348,10 @@ def plot_accuracy_degradation(base_acc, model_accs, model_names,
     """
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+    # Adaptive figure size
+    num_models = len(model_names) + 1
+    fig_width = max(10, 8 + num_models * 0.5)
+    fig, ax = plt.subplots(figsize=(fig_width, 6))
 
     all_names = ['Base'] + model_names
     all_accs = [base_acc] + model_accs
@@ -295,7 +359,8 @@ def plot_accuracy_degradation(base_acc, model_accs, model_names,
 
     colors = ['green'] + ['orange' if d < 5 else 'red' for d in degradations[1:]]
 
-    bars = ax.bar(all_names, [a * 100 for a in all_accs], color=colors,
+    x_pos = range(len(all_names))
+    bars = ax.bar(x_pos, [a * 100 for a in all_accs], color=colors,
                   alpha=0.7, edgecolor='black', linewidth=2)
 
     ax.set_ylabel('Test Accuracy (%)')
@@ -303,19 +368,24 @@ def plot_accuracy_degradation(base_acc, model_accs, model_names,
     ax.set_ylim([0, 100])
     ax.grid(True, alpha=0.3, axis='y')
     ax.axhline(y=base_acc * 100, color='blue', linestyle='--', linewidth=2, label='Base Model')
+    ax.set_xticks(x_pos)
 
+    # Adaptive font size based on number of models
+    label_fontsize = max(6, 9 - num_models // 4)
+    
     # Add value labels
     for i, (bar, acc, deg) in enumerate(zip(bars, all_accs, degradations)):
         height = bar.get_height()
         ax.text(bar.get_x() + bar.get_width()/2., height,
-               f'{acc*100:.2f}%', ha='center', va='bottom', fontsize=9, fontweight='bold')
+               f'{acc*100:.1f}%', ha='center', va='bottom', fontsize=label_fontsize, fontweight='bold')
 
         if i > 0:  # Skip base model
             ax.text(bar.get_x() + bar.get_width()/2., height - 5,
-                   f'({deg:+.2f}%)', ha='center', va='top', fontsize=8, color='darkred')
+                   f'({deg:+.1f}%)', ha='center', va='top', fontsize=label_fontsize-1, color='darkred')
 
     ax.legend()
-    plt.xticks(rotation=15)
+    ax.set_xticks(range(len(all_names)))
+    _smart_rotate_labels(ax, all_names)
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f"Saved accuracy degradation plot to {save_path}")
@@ -365,7 +435,8 @@ def plot_resource_utilization(model_stats, save_path='../build/plots/resource_ut
     ax.set_title('Model Resource Breakdown by Layer Type')
     ax.legend()
     ax.grid(True, alpha=0.3, axis='y')
-    plt.xticks(rotation=15)
+    ax.set_xticks(range(len(names)))
+    _smart_rotate_labels(ax, names)
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f"Saved resource utilization plot to {save_path}")
@@ -382,92 +453,110 @@ def generate_summary_report(model_stats, save_path='../build/plots/summary_repor
     """
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
-    fig = plt.figure(figsize=(16, 12))
-    gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
+    # Adaptive figure size based on number of models - MUCH BIGGER
+    num_models = len(model_stats)
+    fig_width = max(20, 16 + num_models * 0.6)
+    fig_height = max(18, 14 + num_models * 0.4)
+    
+    fig = plt.figure(figsize=(fig_width, fig_height))
+    # Increased spacing between subplots
+    gs = fig.add_gridspec(3, 3, hspace=0.5, wspace=0.4, 
+                          height_ratios=[1, 1.2, 1],
+                          top=0.93, bottom=0.05, left=0.06, right=0.98)
 
     names = [stat['name'] for stat in model_stats]
     accuracies = [stat['accuracy'] * 100 for stat in model_stats]
     parameters = [stat['parameters'] / 1e3 for stat in model_stats]
     memory = [stat['memory_mb'] for stat in model_stats]
     colors = sns.color_palette("husl", len(names))
+    
+    # Adaptive font size
+    label_fontsize = max(7, 10 - num_models // 4)
 
     # Accuracy comparison
     ax1 = fig.add_subplot(gs[0, 0])
-    ax1.bar(names, accuracies, color=colors, alpha=0.7, edgecolor='black')
+    ax1.bar(range(len(names)), accuracies, color=colors, alpha=0.7, edgecolor='black')
     ax1.set_ylabel('Accuracy (%)')
     ax1.set_title('Test Accuracy')
-    ax1.tick_params(axis='x', rotation=15)
+    ax1.set_xticks(range(len(names)))
+    _smart_rotate_labels(ax1, names)
     ax1.grid(True, alpha=0.3, axis='y')
 
     # Parameters comparison
     ax2 = fig.add_subplot(gs[0, 1])
-    ax2.bar(names, parameters, color=colors, alpha=0.7, edgecolor='black')
+    ax2.bar(range(len(names)), parameters, color=colors, alpha=0.7, edgecolor='black')
     ax2.set_ylabel('Parameters (K)')
     ax2.set_title('Model Size')
-    ax2.tick_params(axis='x', rotation=15)
+    ax2.set_xticks(range(len(names)))
+    _smart_rotate_labels(ax2, names)
     ax2.grid(True, alpha=0.3, axis='y')
 
     # Memory comparison
     ax3 = fig.add_subplot(gs[0, 2])
-    ax3.bar(names, memory, color=colors, alpha=0.7, edgecolor='black')
+    ax3.bar(range(len(names)), memory, color=colors, alpha=0.7, edgecolor='black')
     ax3.set_ylabel('Memory (MB)')
     ax3.set_title('Memory Footprint')
-    ax3.tick_params(axis='x', rotation=15)
+    ax3.set_xticks(range(len(names)))
+    _smart_rotate_labels(ax3, names)
     ax3.grid(True, alpha=0.3, axis='y')
 
     # Efficiency: Accuracy vs Parameters
     ax4 = fig.add_subplot(gs[1, :2])
     ax4.scatter(parameters, accuracies, s=300, c=colors, alpha=0.7, edgecolors='black', linewidths=2)
-    for i, name in enumerate(names):
-        ax4.annotate(name, (parameters[i], accuracies[i]),
-                    xytext=(8, 8), textcoords='offset points', fontsize=10)
+    _smart_annotate_scatter(ax4, names, parameters, accuracies, colors)
     ax4.set_xlabel('Parameters (K)')
     ax4.set_ylabel('Accuracy (%)')
     ax4.set_title('Model Efficiency: Accuracy vs Size')
     ax4.grid(True, alpha=0.3)
 
-    # Summary table
+    # Summary table - adaptive column width
     ax5 = fig.add_subplot(gs[1, 2])
     ax5.axis('tight')
     ax5.axis('off')
 
+    # Truncate names for table if too long
+    max_name_len = min(12, max(8, 16 - num_models // 2))
     table_data = []
     for stat in model_stats:
         reduction = (1 - stat['parameters'] / model_stats[0]['parameters']) * 100
+        name_display = stat['name'][:max_name_len] + ('...' if len(stat['name']) > max_name_len else '')
         table_data.append([
-            stat['name'][:10],
-            f"{stat['accuracy']*100:.2f}%",
+            name_display,
+            f"{stat['accuracy']*100:.1f}%",
             f"{stat['parameters']/1e3:.1f}K",
-            f"{reduction:.1f}%"
+            f"{reduction:.0f}%"
         ])
 
     table = ax5.table(cellText=table_data,
-                     colLabels=['Model', 'Acc', 'Params', 'Reduction'],
+                     colLabels=['Model', 'Acc', 'Params', 'Red.'],
                      cellLoc='center',
                      loc='center')
     table.auto_set_font_size(False)
-    table.set_fontsize(9)
-    table.scale(1, 2)
-    ax5.set_title('Summary Statistics', pad=20)
+    table.set_fontsize(max(7, 10 - num_models // 3))
+    table.scale(1.1, 1.8 + num_models * 0.08)
+    ax5.set_title('Summary Statistics', pad=30, fontsize=11)
 
-    # Speedup / Compression ratio
+    # Speedup / Compression ratio (horizontal bar chart - handles many models well)
     ax6 = fig.add_subplot(gs[2, :])
     base_params = model_stats[0]['parameters']
     compression_ratios = [base_params / stat['parameters'] for stat in model_stats]
 
-    bars = ax6.barh(names, compression_ratios, color=colors, alpha=0.7, edgecolor='black')
-    ax6.set_xlabel('Compression Ratio (vs Base Model)')
-    ax6.set_title('Model Compression Achieved')
+    y_pos = range(len(names))
+    bars = ax6.barh(y_pos, compression_ratios, color=colors, alpha=0.7, edgecolor='black', height=0.7)
+    ax6.set_yticks(y_pos)
+    ax6.set_yticklabels(names, fontsize=label_fontsize + 1)
+    ax6.set_xlabel('Compression Ratio (vs Base Model)', fontsize=11)
+    ax6.set_title('Model Compression Achieved', fontsize=12, pad=15)
     ax6.axvline(x=1.0, color='red', linestyle='--', linewidth=2, label='Base Model')
     ax6.grid(True, alpha=0.3, axis='x')
-    ax6.legend()
+    ax6.legend(loc='lower right', fontsize=10)
 
     for bar, ratio in zip(bars, compression_ratios):
         width = bar.get_width()
-        ax6.text(width, bar.get_y() + bar.get_height()/2.,
-                f'{ratio:.2f}x', ha='left', va='center', fontsize=10, fontweight='bold')
+        ax6.text(width + 0.08, bar.get_y() + bar.get_height()/2.,
+                f'{ratio:.2f}x', ha='left', va='center', fontsize=label_fontsize + 1, fontweight='bold')
 
-    fig.suptitle('GraphSAGE Model Optimization Summary', fontsize=16, fontweight='bold')
+    fig.suptitle('GraphSAGE Model Optimization Summary', fontsize=18, fontweight='bold', y=0.97)
 
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f"Saved summary report to {save_path}")

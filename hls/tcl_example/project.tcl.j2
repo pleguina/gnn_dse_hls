@@ -43,9 +43,13 @@ set src_files { {% for f in src %}"{{ f }}" {% endfor %} }
 set tb_files  { {% for f in tb  %}"{{ f }}" {% endfor %} }
 
 # ---------- include directories -----------------------------
-# We build one giant cflags string with all include dirs and any
-# extra flags the Python config gave us.
-set cflags "{% if cfg_dir is defined and cfg_dir %}-I{{ cfg_dir }} {% endif %}{% for inc in includes %}-I{{ inc }} {% endfor %}{% for flag in cflags %}{{ flag }} {% endfor %}"
+# We build cflags as a Tcl list - each flag is a separate element.
+# This avoids quote-escaping issues entirely.
+set cflags [list \
+{% if cfg_dir is defined and cfg_dir %}  -I{{ cfg_dir }} \
+{% endif %}{% for inc in includes %}  -I{{ inc }} \
+{% endfor %}{% for flag in cflags %}  {{ flag }} \
+{% endfor %}]
 
 puts "▶ Adding source files..."
 foreach file $src_files {

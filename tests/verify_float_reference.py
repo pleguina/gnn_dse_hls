@@ -72,7 +72,7 @@ def main():
     input_features = load_float_matrix(f'{test_dir}/network_input.txt')
     print(f"  Input features shape: {input_features.shape}")
     
-    # The test vectors are already projected! So we need to skip projection
+    # The test vectors are already projected, so skip projection
     # and feed directly into conv layers
     actual_input_dim = input_features.shape[1]
     

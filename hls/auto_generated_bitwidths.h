@@ -21,7 +21,7 @@
 
 #define OPT_NUM_NODES       8
 #define OPT_IN_FEATURES     16
-#define OPT_HIDDEN_FEATURES 24
+#define OPT_HIDDEN_FEATURES 16
 #define OPT_OUT_FEATURES    7
 
 // ============================================================================
@@ -45,11 +45,11 @@
 
 // Accumulator for MAC operations (aggregation and linear)
 // Theoretical max: 2080768
-// Actual max: 389025
+// Actual max: 520192
 #define OPT_ACC_BITS 22
 
 // Fixed-point scale factors (eff_scale_fp, beta_fp)
-// Max scale value: 179294
+// Max scale value: 235848
 #define OPT_SCALE_BITS 21
 
 // Intermediate product (acc * scale)
@@ -65,9 +65,9 @@
 // Fixed-Point Scale Values (for testbench reference)
 // ============================================================================
 
-#define OPT_EFF_SCALE1_FP 179294
-#define OPT_EFF_SCALE2_FP 176976
-#define OPT_BETA1_FP      218
+#define OPT_EFF_SCALE1_FP 235848
+#define OPT_EFF_SCALE2_FP 221043
+#define OPT_BETA1_FP      254
 #define OPT_BETA2_FP      4096
 
 // ============================================================================

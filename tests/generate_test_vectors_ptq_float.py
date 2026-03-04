@@ -12,14 +12,18 @@ import torch
 import numpy as np
 import os
 import sys
+from pathlib import Path
 import argparse
 
 # Set random seed for reproducibility
 torch.manual_seed(42)
 np.random.seed(42)
 
+# Get project root (parent of tests directory)
+PROJECT_ROOT = Path(os.path.dirname(__file__)).parent.resolve()
+
 # Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from model_base import ReducedGraphSAGE
 from quantization_ptq import quantize_tensor
@@ -297,21 +301,30 @@ def main():
     parser = argparse.ArgumentParser(description='Generate PTQ test vectors')
     parser.add_argument('--hw-round', action='store_true',
                        help='Use hardware-style rounding (round half up) instead of Python banker\'s rounding')
+    parser.add_argument('--in-channels', type=int, default=16,
+                       help='Input feature dimension after projection (default: 16)')
+    parser.add_argument('--hidden-channels', type=int, default=24,
+                       help='Hidden layer dimension (default: 24)')
     args = parser.parse_args()
     
     # Set global rounding mode
     USE_HW_ROUND = args.hw_round
     
+    in_channels = args.in_channels
+    hidden_channels = args.hidden_channels
+    arch_key = f"{in_channels}x{hidden_channels}"
+    
     rounding_mode = "HW-ROUND (round half up)" if USE_HW_ROUND else "Python round (banker's rounding)"
     
     print("="*60)
     print("Generating PTQ Test Vectors (Quantized Forward Pass)")
+    print(f"Architecture: {in_channels} → {hidden_channels} → 7")
     print(f"Rounding mode: {rounding_mode}")
     print("="*60)
 
     # Load Cora dataset
     print("\nLoading Cora dataset...")
-    dataset = Planetoid(root='../data', name='Cora', transform=NormalizeFeatures())
+    dataset = Planetoid(root=str(PROJECT_ROOT / 'data'), name='Cora', transform=NormalizeFeatures())
     data = dataset[0]
 
     # Extract subgraph with fixed center node for reproducibility
@@ -322,29 +335,30 @@ def main():
     print("Loading trained model...")
     model = ReducedGraphSAGE(
         in_channels=dataset.num_features,
-        in_channels_reduced=16,
-        hidden_channels=24,
+        in_channels_reduced=in_channels,
+        hidden_channels=hidden_channels,
         out_channels=dataset.num_classes,
         dropout=0.5,
         use_projection=True,
         root_weight=False  # HLS-compatible version
     )
 
+    model_path = PROJECT_ROOT / 'build/models' / f'reduced_graphsage_no_root_{arch_key}_best.pth'
     try:
-        checkpoint = torch.load('../build/models/reduced_graphsage_no_root_best.pth')
+        checkpoint = torch.load(model_path)
         model.load_state_dict(checkpoint['model_state_dict'])
-        print("✓ Loaded trained model: reduced_graphsage_no_root_best.pth")
+        print(f"✓ Loaded trained model: {model_path}")
     except Exception as e:
         print(f"Error: Could not load trained model: {e}")
         sys.exit(1)
 
     # Generate test vectors
-    output_dir = '../build/test_vectors_ptq_float'
+    output_dir = PROJECT_ROOT / 'build/test_vectors_ptq_float'
 
     print("\n" + "="*60)
     print("Generating PTQ test vectors with quantized forward pass...")
     print("="*60)
-    generate_test_vectors_for_network(model, subgraph_data, output_dir)
+    generate_test_vectors_for_network(model, subgraph_data, str(output_dir))
 
     print("\n" + "="*60)
     print("PTQ test vector generation complete!")

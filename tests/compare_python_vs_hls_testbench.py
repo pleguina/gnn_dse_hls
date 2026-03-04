@@ -228,7 +228,7 @@ def manual_forward_pass(data, verbose=True):
         print(f"Bias1 shape: {b1_int32.shape}")
     
     # Integer matrix multiply: acc = agg1_int8 @ w1_int8.T + b1_int32
-    # Note: weights are [out_features, in_features], so we need transpose
+    # Weights are [out_features, in_features], transpose required
     acc1_int32 = torch.matmul(agg1_int8.to(torch.int32), w1_int8.T.to(torch.int32)) + b1_int32.unsqueeze(0)
     if verbose:
         print(f"Acc1 (int32) range: [{acc1_int32.min()}, {acc1_int32.max()}]")

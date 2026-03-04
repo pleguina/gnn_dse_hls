@@ -570,8 +570,8 @@ def run_full_comparison(data, focus_node=7):
     # Error breakdown
     print_subheader("Error Source Breakdown for Worst Case")
     
-    # How much of the error comes from input differences vs scale/bias differences?
-    # If we use PTQ inputs but INT8 scale/bias:
+    # Decompose error into input-difference vs scale/bias-difference contributions.
+    # Case 1: PTQ inputs with INT8 scale/bias:
     acc_with_ptq_input = int(b2_int8[worst_output]) + sum(
         int(agg2_ptq[worst_node, f]) * int(w2[worst_output, f]) for f in range(hidden_features)
     )

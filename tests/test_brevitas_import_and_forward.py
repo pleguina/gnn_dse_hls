@@ -43,7 +43,7 @@ except ImportError as e:
 
 @pytest.mark.skipif(not BREVITAS_AVAILABLE, reason="Brevitas not installed")
 def test_brevitas_model_creation():
-    """Test that we can create a Brevitas model."""
+    """Test Brevitas model creation."""
     config = BrevitasQuantConfig(weight_bit_width=8, act_bit_width=8)
     
     model = BrevitasReducedGraphSAGE(

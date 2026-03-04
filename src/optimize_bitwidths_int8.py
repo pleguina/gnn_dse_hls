@@ -32,23 +32,36 @@ parser.add_argument('--method', choices=['theoretical', 'data-driven', 'both'],
                     default='both', help='Optimization method')
 parser.add_argument('--m-bits', type=int, default=24,
                     help='Fixed-point fractional bits M (default: 24)')
+parser.add_argument('--hidden-channels', type=int, default=24,
+                    help='Hidden layer dimension (default: 24)')
+parser.add_argument('--in-channels', type=int, default=16,
+                    help='Input layer dimension (default: 16)')
 args = parser.parse_args()
 
 SAFETY_MARGIN = args.safety_margin
 M_BITS = args.m_bits
+HIDDEN_CHANNELS = args.hidden_channels
+IN_CHANNELS = args.in_channels
 
-# Paths
-INT8_DIR = Path("../build/weights_ptq_int8")
-PTQ_DIR = Path("../build/weights_ptq_float")
-TEST_VECTORS_DIR = Path("../build/test_vectors_ptq_float")
-OUTPUT_DIR = Path("../build/hls")
-HLS_DIR = Path("../hls")  # Also copy to HLS source directory
+# Get project root (parent of src directory)
+PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+
+# Architecture-specific subdirectory
+ARCH_DIR = f"{IN_CHANNELS}x{HIDDEN_CHANNELS}"
+
+# Paths (using absolute paths) - now architecture-specific
+INT8_DIR = PROJECT_ROOT / "build/weights_ptq_per_arch" / ARCH_DIR
+PTQ_DIR = PROJECT_ROOT / "build/weights_ptq_per_arch" / ARCH_DIR
+TEST_VECTORS_DIR = PROJECT_ROOT / "build/test_vectors_ptq_float"
+OUTPUT_DIR = PROJECT_ROOT / "build/hls"
+HLS_DIR = PROJECT_ROOT / "hls"  # Also copy to HLS source directory
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 print("=" * 80)
 print("BITWIDTH OPTIMIZATION FOR INT8 GRAPHSAGE HLS")
 print("=" * 80)
 print(f"\nConfiguration:")
+print(f"  Architecture: {IN_CHANNELS} → {HIDDEN_CHANNELS} → 7")
 print(f"  Safety margin: {SAFETY_MARGIN} bits")
 print(f"  M_BITS: {M_BITS}")
 print(f"  Method: {args.method}")
@@ -97,9 +110,9 @@ print("\n" + "-" * 80)
 print("Step 2: Extract Model Parameters")
 print("-" * 80)
 
-# Load INT8 weights
-weights1_int8 = np.loadtxt(PTQ_DIR / "conv1_lin_l_weight.txt", dtype=np.int8).reshape(24, 16)
-weights2_int8 = np.loadtxt(PTQ_DIR / "conv2_lin_l_weight.txt", dtype=np.int8).reshape(7, 24)
+# Load INT8 weights - use architecture parameters
+weights1_int8 = np.loadtxt(PTQ_DIR / "conv1_lin_l_weight.txt", dtype=np.int8).reshape(HIDDEN_CHANNELS, IN_CHANNELS)
+weights2_int8 = np.loadtxt(PTQ_DIR / "conv2_lin_l_weight.txt", dtype=np.int8).reshape(7, HIDDEN_CHANNELS)
 
 # Load INT32 biases
 bias1_int32 = np.loadtxt(INT8_DIR / "bias_layer1_int32.txt", dtype=np.int32)

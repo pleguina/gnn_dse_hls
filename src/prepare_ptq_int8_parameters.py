@@ -20,32 +20,61 @@ import torch
 import argparse
 from pathlib import Path
 
+# Get project root (parent of src directory)
+PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+
 # ============================================================================
 # Configuration
 # ============================================================================
 
 parser = argparse.ArgumentParser(description='Generate INT8-only PTQ parameters')
 parser.add_argument('--m24', action='store_true', 
-                    help='Use M=24 (exact match with PTQ-Float). Default is M=20.')
+                    help='Use M=24 (exact match with PTQ-Float). Default is M=20. DEPRECATED: use --m-bits instead')
+parser.add_argument('--m-bits', type=int, default=None,
+                    help='Fixed-point fractional bits for data/weights (e.g., 16, 20, 24)')
+parser.add_argument('--in-channels', type=int, default=16,
+                    help='Input feature dimension after projection (default: 16)')
+parser.add_argument('--hidden-channels', type=int, default=24,
+                    help='Hidden layer dimension (default: 24)')
+parser.add_argument('--output-dir', type=str, default=None,
+                    help='Output directory for INT8 parameters (default: build/weights_ptq_int8)')
 args = parser.parse_args()
 
+# Architecture parameters
+IN_CHANNELS = args.in_channels
+HIDDEN_CHANNELS = args.hidden_channels
+OUT_CHANNELS = 7  # Fixed for Cora
+
 # Fixed-point precision parameters
-# M=20: Smaller multipliers, 13 LSB max error vs PTQ-Float
-# M=24: Larger multipliers, 0 LSB error (exact match with PTQ-Float + HW rounding)
-M = 24 if args.m24 else 20
+# Determine M: priority is --m-bits, then --m24 flag, then default 20
+if args.m_bits is not None:
+    M = args.m_bits
+elif args.m24:
+    M = 24
+else:
+    M = 20
 K = 4096  # Fixed-point scale for adjacency matrix (2^12)
 K_BITS = 12  # log2(K)
 
-# Paths
-FLOAT_WEIGHTS_DIR = Path("../build/weights_float")
-QUANTIZED_DIR = Path("../build/weights_ptq_float")
-OUTPUT_DIR = Path("../build/weights_ptq_int8")
+# Paths (using absolute paths from PROJECT_ROOT)
+FLOAT_WEIGHTS_DIR = PROJECT_ROOT / "build/weights_float"
+
+# If output-dir is provided, use it for both reading PTQ and writing INT8 params
+if args.output_dir:
+    OUTPUT_DIR = Path(args.output_dir)
+    QUANTIZED_DIR = OUTPUT_DIR  # Read PTQ from same location
+else:
+    # Legacy: read from shared PTQ float, write to shared INT8
+    QUANTIZED_DIR = PROJECT_ROOT / "build/weights_ptq_float"
+    OUTPUT_DIR = PROJECT_ROOT / "build/weights_ptq_int8"
+
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 print("="*80)
 print("INTEGER-ONLY PTQ PARAMETER GENERATION")
 print("="*80)
 print(f"\nConfiguration:")
+print(f"  Architecture: {IN_CHANNELS} → {HIDDEN_CHANNELS} → {OUT_CHANNELS}")
 print(f"  M (scale factor fractional bits): {M}")
 print(f"  K (adjacency fixed-point scale):  {K} (2^{K_BITS})")
 print(f"  Float weights dir: {FLOAT_WEIGHTS_DIR}")
@@ -81,8 +110,8 @@ for name, scale in scales.items():
     print(f"  {name}: {scale}")
 
 # Extract activation and weight scales
-# Note: We need to infer activation scales from the quantization scheme
-# In the current PTQ, we use:
+# Activation scales are inferred from the quantization scheme.
+# In the current PTQ:
 #   scale_in = 0.004860 (from test vectors)
 #   scale_hidden = 0.1
 #   scale_out = 0.1
@@ -91,7 +120,7 @@ for name, scale in scales.items():
 
 # Load activation scales from test vectors metadata
 # (These should have been saved during PTQ generation)
-test_vectors_dir = Path("../build/test_vectors_ptq_float")
+test_vectors_dir = PROJECT_ROOT / "build/test_vectors_ptq_float"
 with open(test_vectors_dir / "scales.txt", 'r') as f:
     lines = f.readlines()
     
@@ -131,13 +160,29 @@ print(f"\nLoading float biases from {FLOAT_WEIGHTS_DIR}/")
 
 def load_float_weight(filename):
     """Load a float weight file and reshape according to .shape file"""
-    # Load flattened data
-    data = np.loadtxt(FLOAT_WEIGHTS_DIR / filename, dtype=np.float32)
-    # Load shape
-    with open(FLOAT_WEIGHTS_DIR / f"{filename}.shape", 'r') as f:
-        shape = tuple(map(int, f.read().strip().split(',')))
-    # Reshape
-    return data.reshape(shape) if len(shape) > 1 else data
+    # Try quantized directory first (for per-architecture setup without _no_root suffix)
+    quantized_path = QUANTIZED_DIR / filename.replace('_no_root', '')
+    if quantized_path.exists():
+        data = np.loadtxt(quantized_path, dtype=np.float32)
+        shape_file = QUANTIZED_DIR / f"{filename.replace('_no_root', '')}.shape"
+        if shape_file.exists():
+            with open(shape_file, 'r') as f:
+                shape = tuple(map(int, f.read().strip().split(',')))
+            return data.reshape(shape) if len(shape) > 1 else data
+        return data
+    
+    # Fall back to float weights directory (legacy with _no_root suffix)
+    float_path = FLOAT_WEIGHTS_DIR / filename
+    if float_path.exists():
+        data = np.loadtxt(float_path, dtype=np.float32)
+        shape_file = FLOAT_WEIGHTS_DIR / f"{filename}.shape"
+        if shape_file.exists():
+            with open(shape_file, 'r') as f:
+                shape = tuple(map(int, f.read().strip().split(',')))
+            return data.reshape(shape) if len(shape) > 1 else data
+        return data
+    
+    raise FileNotFoundError(f"Could not find {filename} in {QUANTIZED_DIR} or {FLOAT_WEIGHTS_DIR}")
 
 bias1_float = load_float_weight('conv1_lin_l_bias_no_root.txt')
 bias2_float = load_float_weight('conv2_lin_l_bias_no_root.txt')

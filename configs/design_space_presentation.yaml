@@ -1,0 +1,48 @@
+# Design Space for Presentation
+# ~36 design points showcasing key trade-offs
+
+algorithm:
+  # Show architecture impact (3 configs)
+  in_channels: [ 16 ] # Fixed for simplicity
+  hidden_channels: [ 16, 32 ] # Small vs medium model
+  out_channels: [ 7 ] # Fixed (Cora classes)
+  num_layers: [ 2 ] # Fixed
+
+  aggregation: [ "mean" ] # Fixed
+  use_root_features: [ true, false ] # Show root feature impact (2×)
+
+quantization:
+  # Show quantization impact (2 configs)
+  mode: [ "float", "int8_po2" ]
+
+  # Fixed for simplicity
+  weight_bit_width: [ 8 ]
+  act_bit_width: [ 8 ]
+  scale_type: [ "po2" ]
+
+hls:
+  # 3 representative HLS strategies
+  implementations: [ "int8_po2" ] # Just one for simplicity
+
+  bind:
+    agg_mul: [ "dsp", "fabric" ] # ← ADD THIS
+    lin_scale_mul: [ "auto" ]
+  # Show unroll impact: None (sequential), Medium (4), High (8)
+  unroll_nodes: [ 0, 4, 8 ]
+  unroll_features_agg: [ 0, 8 ]
+  unroll_features_lin: [ 0, 16 ]
+  unroll_features_relu: [ 0 ] # Fixed
+
+  # Show allocation impact: Unlimited, Constrained (4)
+  allocation:
+    agg_mul_limit: [ "unlimited", 4 ]
+    lin_mul_limit: [ "unlimited", 4 ]
+
+  # Fixed for simplicity
+  pipeline_ii_agg: [ 1 ]
+  pipeline_ii_lin: [ 1 ]
+  bind_storage_agg: [ "auto" ]
+  bind_storage_lin: [ "auto" ]
+
+# Calculation: 2 hidden × 2 root × 2 quant × 3 unroll_nodes × 2 unroll_agg × 2 unroll_lin × 2 alloc_agg × 2 alloc_lin
+# But with filtering: ~36 valid points

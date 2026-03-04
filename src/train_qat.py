@@ -29,7 +29,7 @@ def train_qat(model, data, optimizer, enable_fake_quant=True):
     model.train()
     if enable_fake_quant:
         model.enable_fake_quant()
-        model.disable_observer()  # Observers only during calibration
+        model.enable_observer()  # Observers should be ON during training to adapt qparams
 
     optimizer.zero_grad()
 
@@ -257,6 +257,8 @@ def train_qat_model(
                 'in_channels_reduced': in_channels_reduced,
                 'hidden_channels': hidden_channels,
                 'out_channels': dataset.num_classes,
+                'num_bits_acts': 8,
+                'num_bits_weights': 8,
             }, model_path)
 
         if epoch % 10 == 0:

@@ -16,6 +16,54 @@
 #include <algorithm>
 
 // ============================================================================
+// Design Space Exploration Configuration
+// ============================================================================
+#ifdef DSE_CONFIG
+#include "dse_config.h"
+#endif
+
+// Default pragma parameters
+#ifndef DSE_UNROLL_NODES
+#define DSE_UNROLL_NODES 0
+#endif
+
+#ifndef DSE_UNROLL_FEATURES_AGG
+#define DSE_UNROLL_FEATURES_AGG 0
+#endif
+
+#ifndef DSE_UNROLL_FEATURES_LIN
+#define DSE_UNROLL_FEATURES_LIN 0
+#endif
+
+#ifndef DSE_UNROLL_FEATURES_RELU
+#define DSE_UNROLL_FEATURES_RELU 0
+#endif
+
+#ifndef DSE_AGG_PIPELINE_II
+#define DSE_AGG_PIPELINE_II 1
+#endif
+
+#ifndef DSE_LIN_PIPELINE_II
+#define DSE_LIN_PIPELINE_II 1
+#endif
+
+#ifndef DSE_BIND_AGG_MUL
+#define DSE_BIND_AGG_MUL "dsp"
+#endif
+
+#ifndef DSE_BIND_LIN_MUL
+#define DSE_BIND_LIN_MUL "dsp"
+#endif
+
+#ifndef DSE_ALLOC_AGG_MUL_LIMIT
+#define DSE_ALLOC_AGG_MUL_LIMIT -1
+#endif
+
+#ifndef DSE_ALLOC_LIN_MUL_LIMIT
+#define DSE_ALLOC_LIN_MUL_LIMIT -1
+#endif
+
+// ============================================================================
 // CONFIGURABLE FIXED-POINT TYPE PARAMETERS
 // ============================================================================
 
@@ -90,9 +138,17 @@ void relu_fixed(data_t data[N_NODES][N_FEATURES]) {
     #pragma HLS INLINE
     
     RELU_N: for (int n = 0; n < N_NODES; n++) {
+#if DSE_UNROLL_NODES > 0
+        #pragma HLS UNROLL factor=DSE_UNROLL_NODES
+#elif DSE_UNROLL_NODES == 0
         #pragma HLS UNROLL
+#endif
         RELU_F: for (int f = 0; f < N_FEATURES; f++) {
+#if DSE_UNROLL_FEATURES_RELU > 0
+            #pragma HLS UNROLL factor=DSE_UNROLL_FEATURES_RELU
+#elif DSE_UNROLL_FEATURES_RELU == 0
             #pragma HLS UNROLL
+#endif
             if (data[n][f] < 0) {
                 data[n][f] = 0;
             }
@@ -123,14 +179,27 @@ void aggregate_neighbors(
     #pragma HLS INLINE
     
     AGG_I: for (int i = 0; i < N_NODES; i++) {
+#if DSE_UNROLL_NODES > 0
+        #pragma HLS UNROLL factor=DSE_UNROLL_NODES
+#elif DSE_UNROLL_NODES == 0
         #pragma HLS UNROLL
+#endif
         AGG_F: for (int f = 0; f < N_FEATURES; f++) {
+#if DSE_UNROLL_FEATURES_AGG > 0
+            #pragma HLS UNROLL factor=DSE_UNROLL_FEATURES_AGG
+#elif DSE_UNROLL_FEATURES_AGG == 0
             #pragma HLS UNROLL
+#endif
+            #pragma HLS PIPELINE II=DSE_AGG_PIPELINE_II
             
             acc_t sum = 0;
             
             AGG_J: for (int j = 0; j < N_NODES; j++) {
                 #pragma HLS UNROLL
+#if DSE_ALLOC_AGG_MUL_LIMIT > 0
+                #pragma HLS allocation instances=mul limit=DSE_ALLOC_AGG_MUL_LIMIT operation
+#endif
+                // Configurable mult binding based on DSE parameters
                 if (adj_matrix[i][j] != 0) {
                     sum += adj_matrix[i][j] * features[j][f];
                 }
@@ -163,16 +232,28 @@ void linear_transform(
     #pragma HLS INLINE
     
     LIN_N: for (int n = 0; n < N_NODES; n++) {
+#if DSE_UNROLL_NODES > 0
+        #pragma HLS UNROLL factor=DSE_UNROLL_NODES
+#elif DSE_UNROLL_NODES == 0
         #pragma HLS UNROLL
+#endif
         LIN_OUT: for (int o = 0; o < OUT_FEAT; o++) {
-            #pragma HLS UNROLL
+            #pragma HLS PIPELINE II=DSE_LIN_PIPELINE_II
             
             // Use wider accumulator for MAC operations
             acc_t acc = 0;
             
             // Matrix multiply: acc = sum(features[i] * weights[o][i])
             LIN_IN: for (int i = 0; i < IN_FEAT; i++) {
+#if DSE_UNROLL_FEATURES_LIN > 0
+                #pragma HLS UNROLL factor=DSE_UNROLL_FEATURES_LIN
+#elif DSE_UNROLL_FEATURES_LIN == 0
                 #pragma HLS UNROLL
+#endif
+#if DSE_ALLOC_LIN_MUL_LIMIT > 0
+                #pragma HLS allocation instances=mul limit=DSE_ALLOC_LIN_MUL_LIMIT operation
+#endif
+                // Configurable mult binding based on DSE parameters
                 acc += features[n][i] * weights[o][i];
             }
             
@@ -213,6 +294,7 @@ void graphsage_network_template(
     const weight_t bias2[OUT_FEAT],
     data_t output[N_NODES][OUT_FEAT]
 ) {
+    // Top-level pipeline for single-cycle throughput
     #pragma HLS PIPELINE II=1
     
     // Intermediate buffers - fully partitioned for parallel access
