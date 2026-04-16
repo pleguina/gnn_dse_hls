@@ -94,3 +94,38 @@ paths:
 # Active Configuration Selection
 # Change this to switch between configurations
 active_qat_config: "qat_model"  # Options: "qat_model" or "qat_model_large"
+
+# =============================================================================
+# OMTF Configuration
+# =============================================================================
+# Populated after dataset audit (Stage 1). Nmax and truncation policy are
+# architecture decisions — see docs/omtf/DATASET_SIGNOFF.md.
+
+omtf:
+  # Dataset paths
+  data_root: "data/prod"
+  datasets:
+    signal: ["S1", "S2", "S3", "S4", "S5"]
+    background: ["B1", "B2", "B3", "B4"]
+
+  # Fixed input budget — set after occupancy audit
+  # Nmax = 24 — from p99 occupancy audit (S4 p99=23, rounded to next multiple of 8)
+  # See docs/omtf/DATASET_SIGNOFF.md
+  Nmax: 24
+
+  # Stub feature dimensions
+  stub_features: 8  # phi, phiB, eta, r, quality, type, layer, bx
+
+  # Number of output candidate slots
+  num_candidates: 3
+
+  # Truncation policy when stubs > Nmax (set after Stage 1)
+  # Options: "quality", "bx", "layer_priority", "random"
+  truncation_policy: "quality"  # placeholder
+
+  # Training
+  epochs: 100
+  lr: 0.001
+  batch_size: 256
+  train_datasets: ["S1", "S3", "B1", "B4"]
+  val_datasets: ["S1", "B1"]
