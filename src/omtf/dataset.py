@@ -9,7 +9,8 @@ Truncation: by quality (descending) when n_stubs > Nmax
 
 Output per sample (all tensors on CPU, batching done by DataLoader)
 ------------------------------------------------------------------
-  stubs       : (Nmax, 8) float32  — [phi, phiB, eta, r, quality, type, layer, bx]
+  stubs       : (Nmax, 7) float32  — [phi, phiB, eta, r, quality, type, layer]
+                                      bx excluded (identically 0 in all current samples)
   valid_mask  : (Nmax,)   bool     — True for real stubs, False for padding
   track_id    : (Nmax,)   int8     — raw trackId per stub (0 = noise)
   ambiguous   : (Nmax,)   uint8    — ambiguity flag per stub
@@ -149,7 +150,8 @@ class OMTFDataset(Dataset):
         quality = np.array(entry["quality"], dtype=np.int32)
         typ     = np.array(entry["type"],    dtype=np.int32)
         layer   = np.array(entry["layer"],   dtype=np.int32)
-        bx      = np.array(entry["bx"],      dtype=np.int32)
+        # bx is read from ROOT but NOT stored in the stub tensor — it is
+        # identically 0 in all current samples (uninformative).
         track_id   = np.array(entry["track_id"],  dtype=np.int8)
         ambiguous  = np.array(entry["ambiguous"], dtype=np.uint8)
 
@@ -158,12 +160,11 @@ class OMTFDataset(Dataset):
             order = np.argsort(-quality)[:self.Nmax]
             phi, phiB, eta, r = phi[order], phiB[order], eta[order], r[order]
             quality, typ, layer = quality[order], typ[order], layer[order]
-            bx = bx[order]
             track_id   = track_id[order]
             ambiguous  = ambiguous[order]
             n = self.Nmax
 
-        # --- Build stub tensor (Nmax, 8) float32 with zero padding ---
+        # --- Build stub tensor (Nmax, 7) float32 with zero padding ---
         stubs = np.zeros((self.Nmax, len(RAW_FEATURE_NAMES)), dtype=np.float32)
         stubs[:n, _COL["phi"]]     = phi
         stubs[:n, _COL["phiB"]]    = phiB
@@ -172,7 +173,6 @@ class OMTFDataset(Dataset):
         stubs[:n, _COL["quality"]] = quality
         stubs[:n, _COL["type"]]    = typ
         stubs[:n, _COL["layer"]]   = layer
-        stubs[:n, _COL["bx"]]      = bx
 
         valid_mask = np.zeros(self.Nmax, dtype=bool)
         valid_mask[:n] = True
@@ -200,7 +200,7 @@ class OMTFDataset(Dataset):
 
         if self.include_graph:
             edge_index, edge_attr = compute_pair_features_np(
-                phi=phi, phiB=phiB, eta=eta, r=r, bx=bx,
+                phi=phi, phiB=phiB, eta=eta, r=r,
                 valid_mask=valid_mask[:n],
             )
             edge_attr = clip_kappa_hat(edge_attr, self.kappa_clip)

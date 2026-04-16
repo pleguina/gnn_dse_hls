@@ -4,30 +4,34 @@ OMTF derived pair features.
 Produces per-pair (i, j) features from raw stub arrays for a single window.
 All inputs are Python lists or 1-D numpy arrays of integers.
 
-Raw stub features (per stub): phi, phiB, eta, r, quality, type, layer, bx
-Derived pair features (per ordered pair i < j):
-  delta_phi, delta_r, delta_r2, kappa_hat, abs_delta_eta, delta_bx, phiB_diff
+Raw stub features stored in stub tensor (7-dim — bx excluded, always 0):
+  phi, phiB, eta, r, quality, type, layer
+
+Derived pair features (per ordered pair i < j, 6-dim — delta_bx excluded):
+  delta_phi, delta_r, delta_r2, kappa_hat, abs_delta_eta, phiB_diff
 
 kappa_hat guard: |dr^2| < 1e-6  => kappa_hat = 0.0  (avoids divide-by-zero)
-delta_bx is 0 everywhere in current datasets; retained for completeness.
+
+See docs/omtf/FEATURE_READINESS.md for justification of bx/delta_bx exclusion.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-# Ordered list of raw stub features stored in the stub tensor columns.
-# Column order in dataset.py must match this.
-RAW_FEATURE_NAMES = ["phi", "phiB", "eta", "r", "quality", "type", "layer", "bx"]
+# Ordered list of raw stub features stored in the stub tensor columns (7-dim).
+# bx is read from ROOT but NOT stored — it is identically 0 in all current samples.
+# Column order in dataset.py must match this exactly.
+RAW_FEATURE_NAMES = ["phi", "phiB", "eta", "r", "quality", "type", "layer"]
 
-# Pair features produced by compute_pair_features_np
+# Pair features produced by compute_pair_features_np (6-dim).
+# delta_bx excluded — always 0 in current samples.
 PAIR_FEATURE_NAMES = [
     "delta_phi",
     "delta_r",
     "delta_r2",
     "kappa_hat",
     "abs_delta_eta",
-    "delta_bx",
     "phiB_diff",
 ]
 
@@ -37,21 +41,20 @@ def compute_pair_features_np(
     phiB: np.ndarray,
     eta: np.ndarray,
     r: np.ndarray,
-    bx: np.ndarray,
     valid_mask: np.ndarray | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Compute pair features for all valid (i < j) stub pairs in one window.
 
     Parameters
     ----------
-    phi, phiB, eta, r, bx : (N,) arrays — raw stub features
-    valid_mask             : (N,) bool array; if None, all stubs are valid
+    phi, phiB, eta, r : (N,) arrays — raw stub features (bx excluded)
+    valid_mask        : (N,) bool array; if None, all stubs are valid
 
     Returns
     -------
     edge_index  : (2, E) int64 — row-major (i, j) with i < j over valid stubs
-    edge_attr   : (E, 7) float32 — pair features in PAIR_FEATURE_NAMES order
+    edge_attr   : (E, 6) float32 — pair features in PAIR_FEATURE_NAMES order
     """
     n = len(phi)
     if valid_mask is None:
@@ -76,10 +79,9 @@ def compute_pair_features_np(
     with np.errstate(divide="ignore", invalid="ignore"):
         kappa = np.where(dr2 > 1e-6, 2.0 * dphi / dr2, 0.0).astype(np.float32)
     abs_deta = np.abs(eta[src].astype(np.float32) - eta[dst].astype(np.float32))
-    dbx  = bx[src].astype(np.float32)  - bx[dst].astype(np.float32)
     dphiB = phiB[src].astype(np.float32) - phiB[dst].astype(np.float32)
 
-    edge_attr = np.stack([dphi, dr, dr2, kappa, abs_deta, dbx, dphiB], axis=1)
+    edge_attr = np.stack([dphi, dr, dr2, kappa, abs_deta, dphiB], axis=1)
     edge_index = np.stack([src, dst], axis=0).astype(np.int64)
     return edge_index, edge_attr
 
