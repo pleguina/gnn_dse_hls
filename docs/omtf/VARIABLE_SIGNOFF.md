@@ -122,7 +122,15 @@ GenMuon pT is accessible via the NanoAOD join (reg_eventNum ↔ event, uint32 ca
 
 **GenMuon_charge**: Available. Roughly balanced (+1/−1 ~50/50) across all datasets.
 
-**GenMuon_d0 (displacement)**: **NOT AVAILABLE** in these files. Displacement regression is not possible without it. If needed, must be confirmed to exist in production NanoAOD files.
+**GenMuon_dXY (transverse impact parameter)**: **AVAILABLE** as `GenMuon_dXY`. Displacement regression is possible.
+
+| Dataset | dXY p50 | dXY p95 | \|dXY\|>1cm | Notes |
+|---|---|---|---|---|
+| S1 | ~0 cm | 0.002 cm | 0% | Prompt — from IP |
+| S2 | −9 cm | +81 cm | 97% | Displaced LLP decay |
+| S5 | −6 cm | +116 cm | 96% | Two displaced muons |
+
+**GenMuon_lXY (transverse decay length)**: Also available. S2 p50 ~159 cm, S5 p50 ~133 cm — consistent with long-lived particle production.
 
 ---
 
@@ -145,7 +153,8 @@ Fixed-r layers (stubs spread=0): layers 0, 2, 4, 10, 11, 12, 13, 14 → these ar
 | Edge same-track classification | ✓ | trackId matching |
 | pT regression | ✓ | GenMuon_pt via NanoAOD join |
 | Charge classification | ✓ | GenMuon_charge via join |
-| Displacement (d0) | ✗ | GenMuon_d0 not in files |
+| Displacement (dXY) | ✓ | GenMuon_dXY via NanoAOD join |
+| Decay length (lXY) | ✓ | GenMuon_lXY via NanoAOD join |
 | Ambiguity masking | ✓ | reg_stub_ambiguous |
 | Multi-muon scenarios (S3/S4/S5) | ✓ | Multiple trackId values per window |
 
@@ -162,7 +171,8 @@ Fixed-r layers (stubs spread=0): layers 0, 2, 4, 10, 11, 12, 13, 14 → these ar
 - [x] layer: [0, 17], 14–15 layers populated per sample — correct
 - [x] bx: all 0 — uninformative in current samples, exclude from models
 - [x] GenMuon pT: accessible via join, distributions match dataset intent
-- [x] GenMuon_d0: NOT available — displacement regression requires production NanoAOD confirmation
+- [x] GenMuon_dXY: AVAILABLE (branch named dXY not d0) — displacement regression possible
+- [x] GenMuon_lXY: AVAILABLE — transverse decay length for LLP studies
 
 **Signed off by**: pleguina  
 **Date**: 2026-04-16

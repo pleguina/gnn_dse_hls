@@ -194,10 +194,10 @@ def scan_gen_muon(hits_path: Path, nano_path: Path, max_entries: int) -> dict | 
         n_gen = int(tn.nGenMuon)
 
         # Probe for optional branches once
+        # NanoAOD uses GenMuon_dXY (not d0)
         if has_d0 is None:
-            has_d0 = hasattr(tn, "GenMuon_d0") and tn.GenMuon_d0.size() > 0 if n_gen > 0 else False
             try:
-                _ = tn.GenMuon_d0
+                _ = tn.GenMuon_dXY
                 has_d0 = True
             except Exception:
                 has_d0 = False
@@ -219,7 +219,7 @@ def scan_gen_muon(hits_path: Path, nano_path: Path, max_entries: int) -> dict | 
                 charge_vals.append(int(tn.GenMuon_charge[gen_idx]))
             if has_d0:
                 try:
-                    d0_vals.append(float(tn.GenMuon_d0[gen_idx]))
+                    d0_vals.append(float(tn.GenMuon_dXY[gen_idx]))
                 except Exception:
                     pass
             try:
@@ -361,11 +361,11 @@ def report_gen_pt(pt_data: dict | None, dataset: str):
 
     if pt_data.get("has_d0") and pt_data["d0"]:
         d0_arr = np.array(pt_data["d0"])
-        print(f"    d0: min={d0_arr.min():.3f}  mean={d0_arr.mean():.3f}  "
-              f"max={d0_arr.max():.3f}  |d0|>0.1={np.sum(np.abs(d0_arr)>0.1)} "
-              f"({100*np.mean(np.abs(d0_arr)>0.1):.1f}%)")
+        print(f"    dXY: min={d0_arr.min():.3f}  median={np.median(d0_arr):.3f}  "
+              f"p95={np.percentile(d0_arr,95):.3f}  max={d0_arr.max():.3f}  "
+              f"|dXY|>1cm={np.sum(np.abs(d0_arr)>1)} ({100*np.mean(np.abs(d0_arr)>1):.1f}%)")
     else:
-        print(f"    GenMuon_d0: not available in these files")
+        print(f"    GenMuon_dXY: not available in these files")
 
     return s
 
