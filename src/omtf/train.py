@@ -37,6 +37,7 @@ from omtf.splits import build_splits
 from omtf.losses import node_bce_loss, edge_bce_loss, pt_regression_loss
 from omtf.metrics import stub_recovery_efficiency, edge_auc, node_auc
 from omtf.models.baselines import build_baseline
+from audit.root_utils import set_root_batch_mode
 
 CHECKPOINT_DIR = PROJECT_ROOT / "build" / "omtf" / "checkpoints"
 DATA_ROOT = PROJECT_ROOT / "data" / "prod"
@@ -53,11 +54,12 @@ def _build_loaders(
     include_graph: bool,
     max_files_per_ds: int | None,
     max_entries: int | None,
+    num_workers: int,
+    pin_memory: bool,
     seed: int = 42,
 ) -> tuple[DataLoader, DataLoader]:
     """Build train and val DataLoaders from file-level splits."""
-    import ROOT
-    ROOT.gROOT.SetBatch(True)
+    set_root_batch_mode()
 
     splits = build_splits(DATA_ROOT, datasets, train_frac=0.75, val_frac=0.15, seed=seed)
 
@@ -88,9 +90,13 @@ def _build_loaders(
     print(f"  Train samples: {len(train_ds)}  Val samples: {len(val_ds)}")
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
-                              collate_fn=collate_omtf, num_workers=0)
+                              collate_fn=collate_omtf, num_workers=num_workers,
+                              pin_memory=pin_memory,
+                              persistent_workers=(num_workers > 0))
     val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False,
-                              collate_fn=collate_omtf, num_workers=0)
+                              collate_fn=collate_omtf, num_workers=num_workers,
+                              pin_memory=pin_memory,
+                              persistent_workers=(num_workers > 0))
     return train_loader, val_loader
 
 
@@ -209,10 +215,18 @@ def _validate_edge_mlp(model, loader: DataLoader, device: torch.device) -> dict:
 # --------------------------------------------------------------------------
 
 def train(args):
-    import ROOT
-    ROOT.gROOT.SetBatch(True)
+    set_root_batch_mode()
 
-    device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
+    use_cuda = torch.cuda.is_available() and not args.cpu
+    if use_cuda:
+        try:
+            _ = torch.empty(1, device="cuda")
+        except Exception as e:
+            print(f"[WARN] CUDA reported available but is not usable: {e}")
+            print("[WARN] Falling back to CPU.")
+            use_cuda = False
+
+    device = torch.device("cuda" if use_cuda else "cpu")
     print(f"Device: {device}")
 
     include_graph = (args.model == "edge_mlp") or args.graph
@@ -224,6 +238,8 @@ def train(args):
         include_graph=include_graph,
         max_files_per_ds=args.max_files,
         max_entries=args.max_entries,
+        num_workers=args.num_workers,
+        pin_memory=(args.pin_memory and device.type == "cuda"),
         seed=args.seed,
     )
 
@@ -349,6 +365,10 @@ def main():
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--cpu", action="store_true")
+    parser.add_argument("--num-workers", type=int, default=0,
+                        help="DataLoader workers")
+    parser.add_argument("--pin-memory", action="store_true",
+                        help="Enable DataLoader pin_memory for CUDA runs")
     args = parser.parse_args()
 
     train(args)

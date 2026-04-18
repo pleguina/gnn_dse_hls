@@ -1,159 +1,167 @@
-# Quick Start Guide
+# Quick Start Guide (OMTF Migration Branch)
+
+This branch is for the OMTF ML-to-firmware migration workflow described in:
+
+- `docs/omtf/MIGRATION_PLAN.md`
+- `docs/omtf/OMTF_MODEL_STUDY.md`
+- `docs/omtf/MIGRATION_STATUS.md`
+
+The legacy Cora/GraphSAGE pipeline is still available, but it is secondary in this branch.
+
+## Branch intent (read first)
+
+- OMTF development is additive: legacy files remain in place until migration gates are complete.
+- OMTF code lives under `src/omtf/` and is the default path for new work.
+- Current active stage is Stage 3 baselines (DeepSets and EdgeMLP), with full training runs pending.
 
 ## Prerequisites
 
-- Python 3.8+
-- ~500 MB free disk space (Cora dataset + models)
-- Internet connection (first run downloads the Cora dataset automatically)
+- Python 3.9+
+- Access to OMTF ROOT datasets (local or Lustre)
+- `nvidia-smi` available if you plan to run on GPU
 
 ## Installation
 
 ```bash
-cd simple-gnn
+cd gnn_dse_hls
 python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python scripts/verify_setup.py
+./venv/bin/python -m pip install --upgrade pip setuptools wheel
+./venv/bin/python -m pip install -r requirements.txt
+./venv/bin/python -m pip install pyyaml
 ```
 
-## Run the Full Pipeline
+## Hardware and GPU readiness
+
+This repository now includes a GPU readiness check:
+
+```bash
+./venv/bin/python scripts/verify_gpu_readiness.py
+```
+
+Current cluster findings on `mlui01`:
+
+- GPUs detected: 2x Tesla P100 12 GB
+- PyTorch in this env supports `sm_60` (P100 compatible)
+- Remaining blocker for GPU training: GPU compute mode is `Prohibited`
+
+Until compute mode is changed by admins, training will automatically fall back to CPU.
+
+## Configure OMTF data root
+
+OMTF training/evaluation entrypoints read data from `data/prod` by default.
+
+Expected layout:
+
+```text
+data/prod/
+    S1/omtf_hits_S1_*.root
+    S2/...
+    S3/...
+    S4/...
+    S5/...
+    B1/...
+    B2/...
+    B3/...
+    B4/...
+```
+
+If your datasets are in Lustre:
+
+```bash
+mkdir -p data
+rm -rf data/prod
+ln -s /lustre/ific.uv.es/ml/uovi156/data/prod data/prod
+```
+
+## OMTF baseline training (Stage 3)
+
+Activate environment:
+
+```bash
+source venv/bin/activate
+```
+
+Quick smoke tests:
+
+```bash
+# Baseline A (DeepSets)
+python src/omtf/train.py --model deepsets --datasets S1 B1 B4 --epochs 20 --max-files 3 --max-entries 200
+
+# Baseline B (EdgeMLP)
+python src/omtf/train.py --model edge_mlp --datasets S1 --epochs 20 --max-files 3 --max-entries 200
+```
+
+Recommended intermediate run from migration status:
+
+```bash
+python src/omtf/train.py --model deepsets --datasets S1 B1 B4 --epochs 50 --max-files 50
+```
+
+Outputs:
+
+- Checkpoints: `build/omtf/checkpoints/*_best.pt`
+- History: `build/omtf/checkpoints/*_history.json`
+
+## OMTF evaluation
+
+```bash
+python src/omtf/eval.py \
+    --checkpoint build/omtf/checkpoints/deepsets_best.pt \
+    --model deepsets \
+    --datasets S1 B4
+```
+
+For EdgeMLP:
+
+```bash
+python src/omtf/eval.py \
+    --checkpoint build/omtf/checkpoints/edge_mlp_best.pt \
+    --model edge_mlp \
+    --datasets S1 B4
+```
+
+## What not to use as default in this branch
+
+- `run_pipeline.py`
+- `src/train.py`
+- `src/quantization_ptq.py`
+- `src/train_qat.py`
+
+These remain valid for the legacy benchmark, but they are not the primary OMTF migration workflow.
+
+## Legacy GraphSAGE path (kept for reference)
+
+If you need the original Cora benchmark path:
 
 ```bash
 python run_pipeline.py
 ```
 
-This runs the following steps in sequence:
-
-| Step | Script | Output |
-|------|--------|--------|
-| Train base + reduced models | `src/train.py` | `build/models/*.pth` |
-| Train QAT model | `src/train_qat.py` | `build/models/4_qat_no_root.pth` |
-| Extract 8-node subgraph | `src/subgraph_extraction.py` | `build/subgraph/` |
-| PTQ quantization | `src/quantization_ptq.py` | `build/weights_ptq_float/` |
-| QAT weight export | `src/quantization_qat.py` | `build/weights_qat/` |
-| INT8 parameter conversion | `src/prepare_ptq_int8_parameters.py` | `build/weights_ptq_int8/` |
-| Brevitas quantization | `src/brevitas_quantization.py` | `build/brevitas/` |
-| Float test vectors | `tests/generate_test_vectors_float.py` | `build/test_vectors_float/` |
-| PTQ test vectors | `tests/generate_test_vectors_ptq_float.py` | `build/test_vectors_ptq_float/` |
-| INT8 test vectors | `tests/generate_test_vectors_ptq_int8.py` | `build/test_vectors_ptq_int8/` |
-| Model analysis & plots | `src/analyze_models.py` | `build/plots/` |
-
-Total run time: ~5–10 minutes on CPU.
-
-## Run Individual Steps
-
-```bash
-# Train only
-python run_pipeline.py --steps train
-
-# Skip training, run quantization and vectors
-python run_pipeline.py --skip-training --steps quant,int8_ptq,vectors
-
-# Skip training and analysis
-python run_pipeline.py --skip-training --skip-analysis
-```
-
-Available step names: `train`, `train_qat`, `subgraph`, `quant`, `quant_qat`, `int8_ptq`, `brevitas`, `vectors`, `analyze`, `all`.
-
-## Run Steps Directly
-
-```bash
-source venv/bin/activate
-
-# Train models
-cd src && python train.py && cd ..
-
-# Extract subgraph
-cd src && python subgraph_extraction.py && cd ..
-
-# PTQ quantization
-cd src && python quantization_ptq.py && cd ..
-
-# Generate INT8 test vectors
-cd tests && python generate_test_vectors_ptq_int8.py && cd ..
-
-# Analyze all model variants
-cd src && python analyze_models.py && cd ..
-```
-
-## HLS C-Simulation
-
-Requires Xilinx Vitis HLS 2022.1+.
-
-```bash
-# Generate HLS project for INT8-PO2 variant
-cd hls && python generate_graphsage_int8_po2_tcl.py
-cd ../build/hls/graphsage_int8_po2
-vitis_hls -f project.tcl
-```
-
-For the float variant:
-```bash
-cd hls
-vitis_hls -f run_csim_float.tcl
-```
-
-## Design Space Exploration
-
-```bash
-# Full exploration (training + PTQ + HLS synthesis)
-python src/explore_design_space.py --config configs/design_space.yaml
-
-# Software-only (no HLS)
-python src/explore_design_space.py --config configs/design_space.yaml --skip-hls
-
-# Preview design points without running
-python src/explore_design_space.py --config configs/design_space.yaml --dry-run
-```
-
-After exploration, generate Pareto analysis:
-```bash
-python src/analyze_pareto.py --input build/experiments/design_space_results.json --output build/plots/pareto
-```
-
-## Expected Results
-
-| Model | Test Accuracy (Cora) |
-|-------|---------------------|
-| Base (64 hidden) | ~80% |
-| Reduced (16→24→7) | ~76% |
-| PTQ-Float | ~76% |
-| PTQ-INT8 | ~76% |
-
-## Output Locations
-
-| Artifact | Path |
-|----------|------|
-| Trained models | `build/models/` |
-| Training plots | `build/plots/` |
-| PTQ weights | `build/weights_ptq_float/` |
-| INT8 weights | `build/weights_ptq_int8/` |
-| QAT weights | `build/weights_qat/` |
-| Float test vectors | `build/test_vectors_float/` |
-| PTQ test vectors | `build/test_vectors_ptq_float/` |
-| INT8 test vectors | `build/test_vectors_ptq_int8/` |
-| Subgraph data | `build/subgraph/` |
-| HLS synthesis | `build/hls/` |
-| DSE results | `build/experiments/` |
+Legacy model and quantization scripts remain functional, but new migration development should be done under `src/omtf/`.
 
 ## Troubleshooting
 
-**Import errors**: Activate the virtual environment (`source venv/bin/activate`) and run `python scripts/verify_setup.py`.
+**`ModuleNotFoundError: yaml`**
 
-**Dataset download fails**: The Cora dataset is fetched by PyTorch Geometric on first run. Check your internet connection and retry.
-
-**HLS compilation**: The C++ testbenches in `hls/` require Vitis HLS. Without it, use `make` with a standard C++ compiler for basic validation.
-
-## Architecture
-
-```
-Input (8 nodes × 16 features)
-    ↓
-[GraphSAGE Layer 1] (16 → 24, mean aggregation)
-    ↓ ReLU
-[GraphSAGE Layer 2] (24 → 7, mean aggregation)
-    ↓
-Output (8 nodes × 7 classes)
+```bash
+./venv/bin/python -m pip install pyyaml
 ```
 
-The full model includes a projection layer (1433 → 16) that maps raw Cora features down to the reduced dimension. The 8-node subgraph is extracted for HLS validation.
+**No ROOT files found under `data/prod`**
+
+Check dataset layout and symlink target. Expected file pattern is `omtf_hits_<DATASET>_*.root` inside each dataset folder.
+
+**ROOT import/runtime errors**
+
+OMTF train/eval paths use `uproot` fallback and do not require PyROOT for normal runs.
+If you run audit scripts under `src/audit/`, PyROOT may still be required.
+
+**CUDA appears available but training runs on CPU**
+
+Run:
+
+```bash
+./venv/bin/python scripts/verify_gpu_readiness.py
+```
+
+If it reports compute mode `Prohibited`, request admin change to `Default` or `Exclusive Process`.

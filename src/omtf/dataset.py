@@ -103,7 +103,6 @@ class OMTFDataset(Dataset):
     # ------------------------------------------------------------------
 
     def _build_index(self) -> None:
-        import ROOT
         from audit.root_utils import open_hits_tree
 
         for fi, path in enumerate(self.files):
@@ -125,7 +124,6 @@ class OMTFDataset(Dataset):
         return len(self._index)
 
     def __getitem__(self, idx: int) -> dict:
-        import ROOT
         from audit.root_utils import open_hits_tree, read_entry
 
         fi, ei = self._index[idx]

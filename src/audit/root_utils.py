@@ -1,12 +1,31 @@
 """
-Shared ROOT reading utilities for OMTF audit scripts.
+Shared ROOT reading utilities for OMTF scripts.
 
-ROOT's Python bindings return `str` of length 1 for C++ char/UChar_t values.
-These helpers convert them to proper Python ints with correct sign handling.
+Supports two backends:
+1) PyROOT (if available)
+2) uproot fallback (default in environments without ROOT bindings)
+
+ROOT's Python bindings may return `str` of length 1 for C++ char/UChar_t values.
+These helpers normalize values to proper Python ints with correct sign handling.
 """
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
 
 TREE_PATH = "simOmtfPhase2Digis/OMTFAllInputTree"
 NANO_TREE = "Events"
+
+
+def set_root_batch_mode() -> None:
+    """Enable ROOT batch mode when PyROOT is available; no-op otherwise."""
+    try:
+        import ROOT
+        ROOT.gROOT.SetBatch(True)
+    except Exception:
+        pass
 
 
 def schar(v) -> int:
@@ -21,44 +40,96 @@ def uchar(v) -> int:
 
 
 def read_vec_schar(vec) -> list:
-    """Read a ROOT vector<signed char> branch into a Python list of ints."""
-    return [schar(vec[j]) for j in range(vec.size())]
+    """Read a signed-char vector-like branch into a list of ints."""
+    return [schar(v) for v in vec]
 
 
 def read_vec_uchar(vec) -> list:
-    """Read a ROOT vector<unsigned char> branch into a Python list of ints."""
-    return [uchar(vec[j]) for j in range(vec.size())]
+    """Read an unsigned-char vector-like branch into a list of ints."""
+    return [uchar(v) for v in vec]
 
 
 def read_vec_short(vec) -> list:
-    """Read a ROOT vector<short> branch into a Python list of ints."""
-    return [int(vec[j]) for j in range(vec.size())]
+    """Read a short vector-like branch into a Python list of ints."""
+    return [int(v) for v in vec]
+
+
+class _UprootFileAdapter:
+    """Minimal adapter exposing Close() like ROOT TFile."""
+
+    def __init__(self, fh):
+        self._fh = fh
+
+    def Close(self):
+        self._fh.close()
+
+
+class _UprootTreeAdapter:
+    """Minimal adapter exposing GetEntries/GetEntry + branch attrs like TTree."""
+
+    def __init__(self, tree):
+        self._tree = tree
+        self._num_entries = int(tree.num_entries)
+
+    def GetEntries(self):
+        return self._num_entries
+
+    def GetEntry(self, i: int):
+        arrays = self._tree.arrays(entry_start=i, entry_stop=i + 1, library="np")
+        for name, values in arrays.items():
+            value = values[0]
+            if isinstance(value, np.generic):
+                value = value.item()
+            setattr(self, name, value)
+        return 1
+
+
+def _open_with_pyroot(path, tree_path):
+    import ROOT
+
+    f = ROOT.TFile.Open(str(path))
+    if not f or f.IsZombie():
+        return None, None
+    t = f.Get(tree_path)
+    if not t:
+        f.Close()
+        return None, None
+    return f, t
+
+
+def _open_with_uproot(path, tree_path):
+    import uproot
+
+    f = uproot.open(str(path))
+    if tree_path not in f:
+        f.close()
+        return None, None
+    t = f[tree_path]
+    return _UprootFileAdapter(f), _UprootTreeAdapter(t)
 
 
 def open_hits_tree(path):
-    """Open a hits file and return (TFile, TTree) or (None, None) on failure."""
-    import ROOT
-    f = ROOT.TFile.Open(str(path))
-    if not f or f.IsZombie():
-        return None, None
-    t = f.Get(TREE_PATH)
-    if not t:
-        f.Close()
-        return None, None
-    return f, t
+    """Open a hits file and return (File, Tree) or (None, None) on failure."""
+    path = Path(path)
+    try:
+        return _open_with_pyroot(path, TREE_PATH)
+    except Exception:
+        return _open_with_uproot(path, TREE_PATH)
 
 
 def open_nano_tree(path):
-    """Open a nano file and return (TFile, TTree) or (None, None) on failure."""
-    import ROOT
-    f = ROOT.TFile.Open(str(path))
-    if not f or f.IsZombie():
-        return None, None
-    t = f.Get(NANO_TREE)
-    if not t:
-        f.Close()
-        return None, None
-    return f, t
+    """Open a nano file and return (File, Tree) or (None, None) on failure."""
+    path = Path(path)
+    try:
+        return _open_with_pyroot(path, NANO_TREE)
+    except Exception:
+        return _open_with_uproot(path, NANO_TREE)
+
+
+def _vec_len(vec) -> int:
+    if hasattr(vec, "size") and callable(vec.size):
+        return int(vec.size())
+    return len(vec)
 
 
 def read_entry(t, i: int) -> dict:
@@ -67,7 +138,7 @@ def read_entry(t, i: int) -> dict:
     All signed char vectors are sign-corrected.
     """
     t.GetEntry(i)
-    n = t.reg_stub_phiHw.size()
+    n = _vec_len(t.reg_stub_phiHw)
     return {
         "event_num": int(t.reg_eventNum),
         "i_processor": uchar(t.reg_iProcessor),

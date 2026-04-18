@@ -36,6 +36,7 @@ from omtf.metrics import (
 )
 from omtf.models.baselines import build_baseline
 from torch.utils.data import DataLoader
+from audit.root_utils import set_root_batch_mode
 
 DATA_ROOT = PROJECT_ROOT / "data" / "prod"
 NMAX = 24
@@ -56,9 +57,8 @@ def _load_model(checkpoint_path: str, model_name: str, device: torch.device):
 
 
 def _make_loader(dataset: str, include_graph: bool, max_files: int | None,
-                 max_entries: int | None) -> DataLoader:
-    import ROOT
-    ROOT.gROOT.SetBatch(True)
+                 max_entries: int | None, num_workers: int) -> DataLoader:
+    set_root_batch_mode()
 
     d = DATA_ROOT / dataset
     files = sorted(d.glob(f"omtf_hits_{dataset}_*.root"))
@@ -69,7 +69,8 @@ def _make_loader(dataset: str, include_graph: bool, max_files: int | None,
     ds = OMTFDataset(files, Nmax=NMAX, include_graph=include_graph,
                      max_entries=max_entries)
     return DataLoader(ds, batch_size=256, shuffle=False,
-                      collate_fn=collate_omtf, num_workers=0)
+                      collate_fn=collate_omtf, num_workers=num_workers,
+                      persistent_workers=(num_workers > 0))
 
 
 @torch.no_grad()
@@ -155,13 +156,22 @@ def main():
     parser.add_argument("--datasets", nargs="+", default=["S1", "B4"])
     parser.add_argument("--max-files", type=int, default=None)
     parser.add_argument("--max-entries", type=int, default=None)
+    parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--cpu", action="store_true")
     args = parser.parse_args()
 
-    import ROOT
-    ROOT.gROOT.SetBatch(True)
+    set_root_batch_mode()
 
-    device = torch.device("cpu" if args.cpu or not torch.cuda.is_available() else "cuda")
+    use_cuda = torch.cuda.is_available() and not args.cpu
+    if use_cuda:
+        try:
+            _ = torch.empty(1, device="cuda")
+        except Exception as e:
+            print(f"[WARN] CUDA reported available but is not usable: {e}")
+            print("[WARN] Falling back to CPU.")
+            use_cuda = False
+
+    device = torch.device("cuda" if use_cuda else "cpu")
     model = _load_model(args.checkpoint, args.model, device)
 
     include_graph = (args.model == "edge_mlp")
@@ -170,7 +180,8 @@ def main():
     results = {}
     for ds in args.datasets:
         print(f"\nEvaluating {ds} ...")
-        loader = _make_loader(ds, include_graph, args.max_files, args.max_entries)
+        loader = _make_loader(ds, include_graph, args.max_files, args.max_entries,
+                              args.num_workers)
         if loader is None:
             print(f"  [SKIP] no files found")
             continue
