@@ -144,10 +144,9 @@ def validate_dataset(
 
             # collect phi residuals at match points
             if len(phi_hw) > 0:
-                omtf_phi_r = omtf_phi_to_rad(phi_hw)
+                omtf_phi_r = omtf_phi_to_global_rad(phi_hw, proc)
                 for j in range(len(k_c1)):
                     if tr.truth_source[j] != "unmatched":
-                        omtf_phi_r = omtf_phi_to_global_rad(phi_hw, proc)
                         dphi = np.min(np.abs(angle_diff(omtf_phi_r, float(k_c1[j]))))
                         stats.phi_residuals.append(float(dphi))
 
