@@ -52,7 +52,7 @@ import torch
 _REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO / "src"))
 
-from omtf_gmt.regioning  import stubs_in_window, phi_rel, omtf_phi_to_rad
+from omtf_gmt.regioning  import stubs_in_window, phi_rel, omtf_phi_to_global_rad
 from omtf_gmt.features   import build_node_features, N_FEATURES
 from omtf_gmt.truth_transfer import transfer
 
