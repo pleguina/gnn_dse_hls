@@ -1,0 +1,29 @@
+# HTCondor submit file for OMTF ADG evaluation
+#
+# Submit from repository root:
+#   mkdir -p build/condor
+#   condor_submit scripts/omtf/eval_omtf_htcondor.sub
+
+universe = vanilla
+
+initialdir = /lhome/ext/uovi156/uovi1562/gnn_dse_hls
+executable = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/scripts/omtf/run_omtf_eval.sh
+
+should_transfer_files = NO
+getenv = True
+
+request_cpus = 4
+request_memory = 24G
+request_disk = 4G
+request_gpus = 1
+
+log    = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/omtf_eval.$(Cluster).$(Process).log
+output = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/omtf_eval.$(Cluster).$(Process).out
+error  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/omtf_eval.$(Cluster).$(Process).err
+
+# checkpoint_a checkpoint_b
+arguments = $(CKPT_A) $(CKPT_B)
+
+queue CKPT_A,CKPT_B from (
+  build/omtf/checkpoints/edge_compat_best_trig.pt build/omtf/checkpoints/edge_compat_best_combined.pt
+)

@@ -97,6 +97,39 @@ Recommended intermediate run from migration status:
 python src/omtf/train.py --model deepsets --datasets S1 B1 B4 --epochs 50 --max-files 50
 ```
 
+## HTCondor GPU training template (recommended for real runs)
+
+For Artemisa, production GPU training should be submitted through HTCondor.
+
+Template files added in this repo:
+
+- `scripts/omtf/train_omtf_htcondor.sub`
+- `scripts/omtf/run_omtf_train.sh`
+
+Submit runs:
+
+```bash
+mkdir -p build/condor
+condor_submit scripts/omtf/train_omtf_htcondor.sub
+```
+
+Monitor and manage jobs:
+
+```bash
+condor_q
+condor_q -better-analyze <cluster_id>.<proc_id>
+condor_rm <cluster_id>
+```
+
+How to customize runs:
+
+- Edit the `queue ... from (...)` block in `scripts/omtf/train_omtf_htcondor.sub`
+- Use comma-separated datasets (example: `S1,B1,B4`)
+- Adjust `request_cpus`, `request_memory`, `request_gpus` to match experiment needs
+
+Use `gpurun` only for short interactive validation on UI GPU.
+Use HTCondor template for any training you want to keep/reproduce.
+
 Outputs:
 
 - Checkpoints: `build/omtf/checkpoints/*_best.pt`

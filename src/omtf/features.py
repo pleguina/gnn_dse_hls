@@ -42,6 +42,8 @@ def compute_pair_features_np(
     eta: np.ndarray,
     r: np.ndarray,
     valid_mask: np.ndarray | None = None,
+    layer: np.ndarray | None = None,
+    exclude_same_layer: bool = True,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Compute pair features for all valid (i < j) stub pairs in one window.
@@ -50,6 +52,10 @@ def compute_pair_features_np(
     ----------
     phi, phiB, eta, r : (N,) arrays — raw stub features (bx excluded)
     valid_mask        : (N,) bool array; if None, all stubs are valid
+    layer             : (N,) int array — stub layer index; required when
+                        exclude_same_layer=True
+    exclude_same_layer: if True (default), skip pairs where both stubs share
+                        the same layer. See docs/omtf/EDGE_POLICY.md §2.
 
     Returns
     -------
@@ -72,6 +78,17 @@ def compute_pair_features_np(
     ii, jj = np.triu_indices(nv, k=1)
     src = valid_idx[ii]
     dst = valid_idx[jj]
+
+    # Cross-layer policy: drop same-layer pairs (EDGE_POLICY.md §2)
+    if exclude_same_layer and layer is not None:
+        keep = layer[src] != layer[dst]
+        src = src[keep]
+        dst = dst[keep]
+
+    if len(src) == 0:
+        edge_index = np.zeros((2, 0), dtype=np.int64)
+        edge_attr = np.zeros((0, len(PAIR_FEATURE_NAMES)), dtype=np.float32)
+        return edge_index, edge_attr
 
     dphi = phi[src].astype(np.float32) - phi[dst].astype(np.float32)
     dr   = r[src].astype(np.float32)   - r[dst].astype(np.float32)

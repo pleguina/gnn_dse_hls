@@ -1,0 +1,37 @@
+# HTCondor template for OMTF training runs
+#
+# Submit from repository root:
+#   mkdir -p build/condor
+#   condor_submit scripts/omtf/train_omtf_htcondor.sub
+#
+# Notes:
+# - Uses shared Lustre filesystem (no file transfer).
+# - RequestGPUs can be changed to 2/4/etc. based on your experiment.
+
+universe = vanilla
+
+initialdir = /lhome/ext/uovi156/uovi1562/gnn_dse_hls
+executable = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/scripts/omtf/run_omtf_train.sh
+
+should_transfer_files = NO
+getenv = True
+
+request_cpus = 8
+request_memory = 16G
+request_disk = 8G
+request_gpus = 1
+
+log = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/omtf_train.$(Cluster).$(Process).log
+output = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/omtf_train.$(Cluster).$(Process).out
+error = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/omtf_train.$(Cluster).$(Process).err
+
+# model datasets_csv epochs batch_size max_files num_workers cache_dir
+arguments = $(MODEL) $(DATASETS_CSV) $(EPOCHS) $(BATCH_SIZE) $(MAX_FILES) $(NUM_WORKERS) $(CACHE_DIR)
+
+# One line per training run.
+# DATASETS_CSV must use + as separator (no commas -- HTCondor splits on commas), e.g. S1+B1+B4
+# Set CACHE_DIR to empty string to fall back to ROOT loading.
+queue MODEL,DATASETS_CSV,EPOCHS,BATCH_SIZE,MAX_FILES,NUM_WORKERS,CACHE_DIR from (
+  edge_compat S1+S2+S3+S5+B1+B2+B3+B4 50 128 0 4 build/omtf/cache/schema_v1_graph
+  slot_model  S1+S2+S3+S5+B1+B2+B3+B4 50 128 0 4 build/omtf/cache/schema_v1_graph
+)

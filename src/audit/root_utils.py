@@ -132,6 +132,49 @@ def _vec_len(vec) -> int:
     return len(vec)
 
 
+def load_nano_event_map(path) -> dict:
+    """
+    Read all GenMuon entries from a NanoAOD file into an in-memory event map.
+
+    Returns {event_num(uint32): {'pt': list, 'charge': list, 'dxy': list, 'phi': list}}
+    Returns {} if the file does not exist or cannot be opened.
+    """
+    path = Path(path)
+    if not path.exists():
+        return {}
+    f, t = open_nano_tree(path)
+    if t is None:
+        return {}
+
+    n = int(t.GetEntries())
+    if n == 0:
+        f.Close()
+        return {}
+
+    # Probe optional branches on first entry
+    t.GetEntry(0)
+    has_dxy = hasattr(t, "GenMuon_dXY")
+    has_phi = hasattr(t, "GenMuon_phi")
+
+    event_map: dict = {}
+    for i in range(n):
+        t.GetEntry(i)
+        key = int(t.event) & 0xFFFFFFFF
+        n_gen = int(t.nGenMuon)
+        if n_gen == 0:
+            event_map[key] = {"pt": [], "charge": [], "dxy": [], "phi": []}
+            continue
+        event_map[key] = {
+            "pt":     [float(t.GenMuon_pt[k])     for k in range(n_gen)],
+            "charge": [int(t.GenMuon_charge[k])   for k in range(n_gen)],
+            "dxy":    [float(t.GenMuon_dXY[k])    for k in range(n_gen)] if has_dxy else [0.0] * n_gen,
+            "phi":    [float(t.GenMuon_phi[k])    for k in range(n_gen)] if has_phi else [0.0] * n_gen,
+        }
+
+    f.Close()
+    return event_map
+
+
 def read_entry(t, i: int) -> dict:
     """
     Read one entry from OMTFAllInputTree and return a dict of Python lists.

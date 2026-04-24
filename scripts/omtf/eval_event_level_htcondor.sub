@@ -1,0 +1,26 @@
+# HTCondor submit for event-level trigger efficiency
+#
+#   condor_submit scripts/omtf/eval_event_level_htcondor.sub
+
+universe = vanilla
+
+initialdir = /lhome/ext/uovi156/uovi1562/gnn_dse_hls
+executable = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/scripts/omtf/run_omtf_event_eval.sh
+
+should_transfer_files = NO
+getenv = True
+
+request_cpus   = 4
+request_memory = 32G
+request_disk   = 4G
+request_gpus   = 1
+
+log    = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/omtf_eventeval.$(Cluster).$(Process).log
+output = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/omtf_eventeval.$(Cluster).$(Process).out
+error  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/omtf_eventeval.$(Cluster).$(Process).err
+
+arguments = $(CKPT)
+
+queue CKPT from (
+  build/omtf/checkpoints/edge_compat_best_trig.pt
+)
