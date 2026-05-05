@@ -7,10 +7,10 @@ exec "$ROOT_DIR/venv/bin/python" -u src/omtf_gmt/train.py \
     --datasets   S1 S2 S3 S4 S5 B1 B2 B3 B4 \
     --repeat     B4:8 \
     --model      deepsets \
-    --hidden     64 \
+    --hidden     256 \
     --epochs     50 \
     --batch-size 4096 \
     --num-workers 4 \
     --amp \
-    --output-dir build/omtf_gmt/checkpoints/deepsets_B1a \
+    --output-dir build/omtf_gmt/checkpoints/deepsets_B1a_h256 \
     --device     cuda

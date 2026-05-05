@@ -1,0 +1,19 @@
+universe    = vanilla
+initialdir  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls
+should_transfer_files = NO
+getenv = True
+request_cpus   = 2
+request_memory = 16G
+request_disk   = 2G
+request_gpus   = 1
++UseNvidiaA100 = True
+log    = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/omtf_gmt_eval_B3a.$(Cluster).$(Process).log
+output = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/omtf_gmt_eval_B3a.$(Cluster).$(Process).out
+error  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/omtf_gmt_eval_B3a.$(Cluster).$(Process).err
+
+executable = $(script)
+queue script from (
+  /lhome/ext/uovi156/uovi1562/gnn_dse_hls/scripts/omtf_gmt/run_eval_edge_compat_B3a.sh
+  /lhome/ext/uovi156/uovi1562/gnn_dse_hls/scripts/omtf_gmt/run_eval_deepsets_B3a.sh
+  /lhome/ext/uovi156/uovi1562/gnn_dse_hls/scripts/omtf_gmt/run_eval_detr_B3a.sh
+)

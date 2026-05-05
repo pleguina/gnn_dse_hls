@@ -1,0 +1,14 @@
+universe    = vanilla
+initialdir  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls
+executable  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/scripts/omtf_gmt/run_eval_slot_v3f.sh
+should_transfer_files = NO
+getenv = True
+request_cpus   = 2
+request_memory = 12G
+request_disk   = 2G
+request_gpus   = 1
++UseNvidiaA100 = True
+log    = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/omtf_gmt_eval.$(Cluster).$(Process).log
+output = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/omtf_gmt_eval.$(Cluster).$(Process).out
+error  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/omtf_gmt_eval.$(Cluster).$(Process).err
+queue

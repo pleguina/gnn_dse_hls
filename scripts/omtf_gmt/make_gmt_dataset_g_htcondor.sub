@@ -1,0 +1,17 @@
+universe    = vanilla
+initialdir  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls
+executable  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/scripts/omtf_gmt/run_make_gmt_dataset_g.sh
+arguments   = $(dataset)
+
+should_transfer_files = NO
+getenv = True
+
+request_cpus   = 2
+request_memory = 16G
+request_disk   = 4G
+
+log    = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/make_gmt_g.$(Cluster).$(Process).log
+output = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/make_gmt_g.$(Cluster).$(Process).out
+error  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/make_gmt_g.$(Cluster).$(Process).err
+
+queue dataset in (G1_pos G1_neg G2_pos G2_neg G3_pos G3_neg G4_pos G4_neg G5_pos G5_neg G6_pos G6_neg G7 G8 B4)

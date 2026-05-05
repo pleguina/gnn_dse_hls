@@ -1,26 +1,14 @@
-# HTCondor submit — GMT DeepSets baseline training (Phase B1a)
-# Targets A100 GPUs (mlwn24-mlwn34).
-#
-# Submit from repository root:
-#   condor_submit scripts/omtf_gmt/train_gmt_baseline_htcondor.sub
-
 universe    = vanilla
 initialdir  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls
-executable  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/scripts/omtf_gmt/run_train_gmt_baseline.sh
-
+executable  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/scripts/omtf_gmt/run_train_slot_v3a.sh
 should_transfer_files = NO
 getenv = True
-
 request_cpus   = 4
 request_memory = 24G
 request_disk   = 4G
 request_gpus   = 1
-
-# A100-only: sm_80, 40 GB VRAM, bfloat16 + TF32 tensor cores
 +UseNvidiaA100 = True
-
 log    = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/omtf_gmt_train.$(Cluster).$(Process).log
 output = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/omtf_gmt_train.$(Cluster).$(Process).out
 error  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/omtf_gmt_train.$(Cluster).$(Process).err
-
 queue
