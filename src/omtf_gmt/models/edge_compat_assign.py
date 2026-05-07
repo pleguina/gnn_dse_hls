@@ -110,7 +110,7 @@ class EdgeCompatAssign(nn.Module):
         assign_logits = assign_logits.transpose(1, 2)             # (B, K, Nmax)
         # mask padding stubs to −∞ so they get ~0 weight after softmax
         assign_logits = assign_logits.masked_fill(
-            ~valid_mask.unsqueeze(1).expand(-1, self.K, -1), -1e9
+            ~valid_mask.unsqueeze(1).expand(-1, self.K, -1), float('-inf')
         )
         assign_weights = F.softmax(assign_logits, dim=-1)         # (B, K, Nmax)
 
