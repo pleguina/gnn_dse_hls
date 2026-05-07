@@ -32,14 +32,9 @@ sys.path.insert(0, str(_REPO / "src"))
 sys.path.insert(0, str(_REPO / "scripts" / "omtf_gmt"))
 
 # Import evaluation functions from eval_gmt (read-only, not modified)
-from eval_gmt import (
-    eval_dataset,
-    eval_event_level,
-    render_report,
-    positive_pt,
-)
+from eval_gmt import eval_dataset, eval_event_level, render_report
 
-from omtf_gmt.dataset import GMTCachedDataset, collate_gmt, expand_datasets
+from omtf_gmt.dataset import expand_datasets
 from omtf.models.edge_compat_g import build_edge_compat_g
 
 K_MAX = 3
@@ -90,34 +85,29 @@ def main() -> None:
     print(f"Model: {model_name} hidden={hdim} dropout={dropout} "
           f"epoch={epoch} best_val_loss={best_loss:.4f}")
 
-    manifest = json.loads((args.cache_dir / "manifest.json").read_text())
-
     all_datasets = expand_datasets(args.datasets)
     pw_results  = []
     ev_results  = {}
 
     for ds in all_datasets:
         print(f"  [{ds}] ...", end="\r")
-        dataset = GMTCachedDataset(args.cache_dir, ds)
         pw_res = eval_dataset(
-            model     = model,
-            dataset   = dataset,
-            device    = device,
-            threshold = args.threshold,
-            ds_name   = ds,
-            batch_size   = args.batch_size,
-            num_workers  = args.num_workers,
+            model      = model,
+            cache_dir  = args.cache_dir,
+            ds         = ds,
+            threshold  = args.threshold,
+            device     = device,
+            batch_size = args.batch_size,
         )
         pw_results.append(pw_res)
 
         ev_res = eval_event_level(
-            model    = model,
-            dataset  = dataset,
-            device   = device,
-            threshold = args.threshold,
-            ds_name  = ds,
-            batch_size   = args.batch_size,
-            num_workers  = args.num_workers,
+            model      = model,
+            cache_dir  = args.cache_dir,
+            ds         = ds,
+            threshold  = args.threshold,
+            device     = device,
+            batch_size = args.batch_size,
         )
         ev_results[ds] = ev_res
         print(f"  [{ds}] done")
@@ -130,15 +120,15 @@ def main() -> None:
     json_path.write_text(json.dumps(result, indent=2))
 
     md = render_report(
-        pw_results  = pw_results,
-        ev_results  = ev_results,
-        threshold   = args.threshold,
-        model_name  = model_name,
-        hidden_dim  = hdim,
-        dropout     = dropout,
-        ckpt_path   = args.checkpoint,
-        epoch       = epoch,
-        best_loss   = best_loss,
+        results    = pw_results,
+        ev_results = ev_results,
+        threshold  = args.threshold,
+        model_name = model_name,
+        hdim       = hdim,
+        dropout    = dropout,
+        ckpt_path  = str(args.checkpoint),
+        ckpt_epoch = epoch,
+        best_loss  = best_loss,
     )
     args.output.write_text(md)
 

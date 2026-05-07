@@ -272,6 +272,8 @@ def main() -> None:
                     args.w_hard_neg, args.unmatched_stub_weight,
                 )
             scaler.scale(loss).backward()
+            scaler.unscale_(opt)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(opt)
             scaler.update()
             opt.zero_grad()
