@@ -153,6 +153,9 @@ def load_model(ckpt_path: Path, device: torch.device):
         model = build_deepsets(hidden=hdim, dropout=dropout)
     elif mname == "edge_compat":
         model = build_edge_compat(hidden=hdim, dropout=dropout)
+    elif mname == "edge_compat_assign":
+        from omtf_gmt.models.edge_compat_assign import build_edge_compat_assign
+        model = build_edge_compat_assign(hidden=hdim, dropout=dropout)
     elif mname == "slot_model":
         model = build_slot_model(hidden=hdim, dropout=dropout)
     elif mname == "seq_slot":
@@ -243,6 +246,12 @@ def eval_dataset(
     n_zero_fp = 0
     n_zero_fake_cands = 0
 
+    # assignment diagnostics (only populated for edge_compat_assign)
+    assign_purity_sum   = np.zeros(K_MAX, dtype=np.float64)
+    assign_leakage_sum  = np.zeros(K_MAX, dtype=np.float64)
+    assign_noise_sum    = np.zeros(K_MAX, dtype=np.float64)
+    assign_n_slots      = np.zeros(K_MAX, dtype=np.int64)
+
     # Threshold-scan count accumulators.
     roc_counts: dict[float, dict[str, int]] = {
         round(float(thr), 2): {"tp": 0, "fp": 0, "n_pos": 0, "n_neg": 0}
@@ -328,6 +337,31 @@ def eval_dataset(
             zero_fired = fired[zero_win]
             n_zero_fp += int(zero_fired.any(dim=1).sum().item())
             n_zero_fake_cands += int(zero_fired.sum().item())
+
+        # ---- assignment diagnostics (edge_compat_assign only) ----
+        if "assign_weights" in out:
+            aw = out["assign_weights"]          # (B, K, Nmax)
+            tid = batch["track_id"]             # (B, Nmax) int
+            for k in range(K_MAX):
+                active = sig_slots[:, k]        # (B,) bool — slot has a real candidate
+                if not active.any():
+                    continue
+                aw_k = aw[active, k, :]         # (n_active, Nmax)
+                tid_a = tid[active]             # (n_active, Nmax)
+                vm_a  = vm[active]              # (n_active, Nmax)
+                # purity: weight on correct track_id
+                purity   = aw_k[tid_a == k + 1].sum().item()
+                # leakage: weight on wrong positive track_id
+                other_pos = ((tid_a > 0) & (tid_a != k + 1))
+                leakage  = aw_k[other_pos].sum().item()
+                # noise attention: weight on noise stubs (track_id == 0, valid)
+                noise_m  = (tid_a == 0) & vm_a
+                noise_at = aw_k[noise_m].sum().item()
+                n_act    = int(active.sum().item())
+                assign_purity_sum[k]  += purity
+                assign_leakage_sum[k] += leakage
+                assign_noise_sum[k]   += noise_at
+                assign_n_slots[k]     += n_act
 
         # ---- threshold-scan counts ----
         labels_flat = sig_slots.cpu().numpy().reshape(-1).astype(np.int8)
@@ -418,6 +452,9 @@ def eval_dataset(
         },
         "roc": roc,
         "zero_threshold_scan": zero_scan,
+        "assign_purity":  (assign_purity_sum  / np.maximum(assign_n_slots, 1)).tolist(),
+        "assign_leakage": (assign_leakage_sum / np.maximum(assign_n_slots, 1)).tolist(),
+        "assign_noise":   (assign_noise_sum   / np.maximum(assign_n_slots, 1)).tolist(),
     }
 
 

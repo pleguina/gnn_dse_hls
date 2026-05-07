@@ -37,7 +37,8 @@ _REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO / "src"))
 
 from omtf_gmt.dataset import GMTCachedDataset, collate_gmt, expand_datasets, expand_repeats
-from omtf_gmt.models  import build_deepsets, build_edge_compat, build_slot_model, build_seq_slot, build_count_model, build_detr_model
+from omtf_gmt.models  import build_deepsets, build_edge_compat, build_edge_compat_assign, build_slot_model, build_seq_slot, build_count_model, build_detr_model
+from omtf_gmt.models.edge_compat_assign import assignment_supervision_loss
 from omtf_gmt.models.slot_model import (
     candidate_count_loss,
     attention_diversity_loss,
@@ -66,6 +67,7 @@ def compute_loss(
     w_attn:           float = 0.0,
     w_hard_neg:       float = 0.0,
     unmatched_weight: float = 1.0,
+    w_assign:         float = 0.0,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     vm  = batch["valid_mask"]              # (N, 24)
     nl  = batch["node_label"]              # (N, 24)
@@ -157,6 +159,14 @@ def compute_loss(
         cnt_ce = F.cross_entropy(out["count_logits"], true_count)
         total  = total + w_count * cnt_ce
         breakdown["count_ce_loss"] = cnt_ce.item()
+
+    if w_assign > 0.0 and "assign_weights" in out:
+        a_loss = assignment_supervision_loss(
+            out["assign_weights"], batch["track_id"],
+            batch["valid_mask"],   batch["gen_pt"],
+        )
+        total = total + w_assign * a_loss
+        breakdown["assign_loss"] = a_loss.item()
 
     breakdown["loss"] = total.item()
     return total, breakdown
@@ -337,7 +347,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--repeat",       nargs="*", default=["B4:8"], metavar="DS:N",
                    help="per-dataset train-split repeat factors, e.g. --repeat B4:8 S4:2")
     p.add_argument("--model",        default="deepsets",
-                   choices=["deepsets", "edge_compat", "slot_model", "seq_slot", "count_model", "detr_model"])
+                   choices=["deepsets", "edge_compat", "edge_compat_assign",
+                            "slot_model", "seq_slot", "count_model", "detr_model"])
     p.add_argument("--hidden",       type=int,   default=64)
     p.add_argument("--dropout",      type=float, default=0.0)
     p.add_argument("--epochs",       type=int,   default=50)
@@ -358,6 +369,8 @@ def parse_args() -> argparse.Namespace:
                    help="no-object slot loss weight (detr_model only)")
     p.add_argument("--w-hard-neg",   type=float, default=0.0,
                    help="explicit hard-negative candidate loss weight (pushes G7/G8 slots to zero)")
+    p.add_argument("--w-assign",     type=float, default=0.0,
+                   help="assignment supervision loss weight (edge_compat_assign only)")
     p.add_argument("--unmatched-stub-weight", type=float, default=1.0,
                    help="node-loss weight for truth_source==0 (unmatched) stubs; <1.0 down-weights ambiguous stubs")
     p.add_argument("--num-workers",  type=int,   default=4,
@@ -465,6 +478,8 @@ def main() -> None:
         model = build_deepsets(hidden=args.hidden, dropout=args.dropout)
     elif args.model == "edge_compat":
         model = build_edge_compat(hidden=args.hidden, dropout=args.dropout)
+    elif args.model == "edge_compat_assign":
+        model = build_edge_compat_assign(hidden=args.hidden, dropout=args.dropout)
     elif args.model == "slot_model":
         model = build_slot_model(hidden=args.hidden, dropout=args.dropout)
     elif args.model == "seq_slot":
@@ -509,7 +524,8 @@ def main() -> None:
                 else:
                     loss, _ = compute_loss(out, batch, args.w_node, args.w_cand, args.w_pt,
                                        args.w_count, args.w_div, args.w_null, args.w_attn,
-                                       args.w_hard_neg, args.unmatched_stub_weight)
+                                       args.w_hard_neg, args.unmatched_stub_weight,
+                                       args.w_assign)
             opt.zero_grad()
             scaler.scale(loss).backward()
             scaler.step(opt)
@@ -537,7 +553,8 @@ def main() -> None:
                     else:
                         loss, _ = compute_loss(out, batch, args.w_node, args.w_cand, args.w_pt,
                                        args.w_count, args.w_div, args.w_null, args.w_attn,
-                                       args.w_hard_neg, args.unmatched_stub_weight)
+                                       args.w_hard_neg, args.unmatched_stub_weight,
+                                       args.w_assign)
                 val_loss += loss.item()
                 m = quick_metrics(out, batch)
                 for k in val_metrics:
