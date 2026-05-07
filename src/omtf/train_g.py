@@ -79,14 +79,16 @@ def compute_loss(
     cand_target = (gpt > 0).float()
     cand_loss   = F.binary_cross_entropy_with_logits(cand_logits, cand_target)
 
-    pt_pred = out["pt_pred"]
-    pt_mask = gpt > 0
-    pt_loss = (F.mse_loss(pt_pred[pt_mask].clamp(min=0),
-                          gpt[pt_mask], reduction="sum")
-               / pt_mask.sum().clamp(min=1).float()
-               ) if pt_mask.any() else pt_pred.new_tensor(0.0)
+    # pT regression in log1p-space (matches TPS train.py exactly)
+    sig_mask = cand_target > 0.5
+    pt_loss  = out["pt_pred"].new_tensor(0.0)
+    if sig_mask.any():
+        pt_loss = F.mse_loss(
+            torch.log1p(out["pt_pred"][sig_mask]),
+            torch.log1p(gpt[sig_mask]),
+        )
 
-    hard_neg_loss = pt_pred.new_tensor(0.0)
+    hard_neg_loss = cand_logits.new_tensor(0.0)
     if w_hard_neg > 0 and "meta_is_hard_neg" in batch:
         hn_mask = batch["meta_is_hard_neg"].bool()
         if hn_mask.any():
