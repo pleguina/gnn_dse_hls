@@ -57,23 +57,36 @@ ALL_G_DATASETS = ["G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "B4"]
 def compute_loss(
     out:    dict[str, torch.Tensor],
     batch:  dict[str, torch.Tensor],
-    w_node:  float = 1.0,
-    w_cand:  float = 1.0,
-    w_pt:    float = 0.5,
-    w_count: float = 0.0,
-    w_div:   float = 0.0,
-    w_null:  float = 0.0,
-    w_attn:  float = 0.0,
+    w_node:           float = 1.0,
+    w_cand:           float = 1.0,
+    w_pt:             float = 0.5,
+    w_count:          float = 0.0,
+    w_div:            float = 0.0,
+    w_null:           float = 0.0,
+    w_attn:           float = 0.0,
+    w_hard_neg:       float = 0.0,
+    unmatched_weight: float = 1.0,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     vm  = batch["valid_mask"]              # (N, 24)
     nl  = batch["node_label"]              # (N, 24)
     gpt = batch["gen_pt"]                  # (N, K)
 
     # node BCE (valid stubs only)
+    # optionally down-weight unmatched stubs (truth_source == 0)
     node_logit = out["node_logit"]
-    node_loss = F.binary_cross_entropy_with_logits(
-        node_logit[vm], nl[vm], reduction="mean"
-    )
+    if unmatched_weight != 1.0 and "truth_source" in batch:
+        ts = batch["truth_source"]                          # (N, 24) int
+        w  = torch.ones_like(nl, dtype=torch.float32)
+        w[ts == 0] = unmatched_weight
+        w = w * vm.float()                                  # zero out padding
+        raw = F.binary_cross_entropy_with_logits(
+            node_logit, nl.float(), reduction="none"
+        )
+        node_loss = (raw * w).sum() / w.sum().clamp(min=1.0)
+    else:
+        node_loss = F.binary_cross_entropy_with_logits(
+            node_logit[vm], nl[vm].float(), reduction="mean"
+        )
 
     # candidate BCE: slot k is positive if gen_pt[k] > 0
     cand_target = (gpt > 0).float()
@@ -97,6 +110,22 @@ def compute_loss(
         "cand_loss": cand_loss.item(),
         "pt_loss":   pt_loss.item(),
     }
+
+    # explicit hard-negative candidate loss: push all slots negative for G7/G8 windows
+    if w_hard_neg > 0.0 and "meta" in batch:
+        hard_neg_mask = torch.tensor(
+            [m["is_hard_neg"] for m in batch["meta"]],
+            dtype=torch.bool, device=node_logit.device,
+        )
+        if hard_neg_mask.any():
+            hn_logits = out["candidate_logits"][hard_neg_mask]
+            hn_loss = F.binary_cross_entropy_with_logits(
+                hn_logits,
+                torch.zeros_like(hn_logits),
+                reduction="mean",
+            )
+            total = total + w_hard_neg * hn_loss
+            breakdown["hard_neg_loss"] = hn_loss.item()
 
     # slot-model auxiliary losses — active only when model returns these keys
     if w_count > 0 and "null_attn" in out:
@@ -327,6 +356,10 @@ def parse_args() -> argparse.Namespace:
                    help="track_id attention supervision loss weight (slot_model only)")
     p.add_argument("--w-no-obj",     type=float, default=0.1,
                    help="no-object slot loss weight (detr_model only)")
+    p.add_argument("--w-hard-neg",   type=float, default=0.0,
+                   help="explicit hard-negative candidate loss weight (pushes G7/G8 slots to zero)")
+    p.add_argument("--unmatched-stub-weight", type=float, default=1.0,
+                   help="node-loss weight for truth_source==0 (unmatched) stubs; <1.0 down-weights ambiguous stubs")
     p.add_argument("--num-workers",  type=int,   default=4,
                    help="DataLoader worker processes (0 = main process only)")
     p.add_argument("--amp",          action="store_true", default=False,
@@ -475,7 +508,8 @@ def main() -> None:
                     loss, _ = detr_loss(out, batch, args.w_node, args.w_pt, args.w_no_obj)
                 else:
                     loss, _ = compute_loss(out, batch, args.w_node, args.w_cand, args.w_pt,
-                                       args.w_count, args.w_div, args.w_null, args.w_attn)
+                                       args.w_count, args.w_div, args.w_null, args.w_attn,
+                                       args.w_hard_neg, args.unmatched_stub_weight)
             opt.zero_grad()
             scaler.scale(loss).backward()
             scaler.step(opt)
@@ -502,7 +536,8 @@ def main() -> None:
                         loss, _ = detr_loss(out, batch, args.w_node, args.w_pt, args.w_no_obj)
                     else:
                         loss, _ = compute_loss(out, batch, args.w_node, args.w_cand, args.w_pt,
-                                       args.w_count, args.w_div, args.w_null, args.w_attn)
+                                       args.w_count, args.w_div, args.w_null, args.w_attn,
+                                       args.w_hard_neg, args.unmatched_stub_weight)
                 val_loss += loss.item()
                 m = quick_metrics(out, batch)
                 for k in val_metrics:

@@ -1,0 +1,23 @@
+universe    = vanilla
+initialdir  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls
+should_transfer_files = NO
+getenv = True
+request_cpus   = 4
+request_memory = 24G
+request_disk   = 4G
+request_gpus   = 1
++UseNvidiaA100 = True
+log    = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/tps_B5_train.$(Cluster).$(Process).log
+output = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/tps_B5_train.$(Cluster).$(Process).out
+error  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/tps_B5_train.$(Cluster).$(Process).err
+
+executable = $(script)
+queue script from (
+  /lhome/ext/uovi156/uovi1562/gnn_dse_hls/scripts/omtf_gmt/run_train_eval_tps_h64_hn025.sh
+  /lhome/ext/uovi156/uovi1562/gnn_dse_hls/scripts/omtf_gmt/run_train_eval_tps_h64_hn050.sh
+  /lhome/ext/uovi156/uovi1562/gnn_dse_hls/scripts/omtf_gmt/run_train_eval_tps_h64_hn100.sh
+  /lhome/ext/uovi156/uovi1562/gnn_dse_hls/scripts/omtf_gmt/run_train_eval_tps_h64_usw025.sh
+  /lhome/ext/uovi156/uovi1562/gnn_dse_hls/scripts/omtf_gmt/run_train_eval_tps_h64_usw050.sh
+  /lhome/ext/uovi156/uovi1562/gnn_dse_hls/scripts/omtf_gmt/run_train_eval_tps_h96_B5a.sh
+  /lhome/ext/uovi156/uovi1562/gnn_dse_hls/scripts/omtf_gmt/run_train_eval_tps_h128_safe50.sh
+)

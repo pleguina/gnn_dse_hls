@@ -1,0 +1,12 @@
+universe    = vanilla
+initialdir  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls
+executable  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/scripts/omtf_gmt/run_audit_tps_inputs.sh
+should_transfer_files = NO
+getenv = True
+request_cpus   = 2
+request_memory = 8G
+request_disk   = 4G
+log    = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/tps_audit.$(Cluster).$(Process).log
+output = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/tps_audit.$(Cluster).$(Process).out
+error  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/tps_audit.$(Cluster).$(Process).err
+queue
