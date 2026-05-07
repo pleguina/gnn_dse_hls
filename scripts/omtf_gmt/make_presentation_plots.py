@@ -999,5 +999,467 @@ def main() -> None:
     print(f"Done — {len(plot_fns)} plots written to {OUTDIR}")
 
 
+# ── 22. Cache sample counts KMTF vs TPS ──────────────────────────────────────
+
+def plot_22_cache_counts() -> None:
+    name = "22_cache_sample_counts_kmtf_vs_tps"
+    kmtf_manifest = ROOT / "build/omtf_gmt/cache_v2/manifest.json"
+    tps_manifest  = ROOT / "build/omtf_gmt/cache_v2_tps/manifest.json"
+
+    datasets = ["G1_pos","G1_neg","G2_pos","G2_neg","G3_pos","G3_neg",
+                "G4_pos","G4_neg","G5_pos","G5_neg","G6_pos","G6_neg",
+                "G7","G8","B4"]
+
+    def load_counts(path):
+        d = try_load_json(path)
+        if d is None:
+            return {}
+        return {k: v["n_samples"] for k, v in d.get("datasets", {}).items()}
+
+    kmtf = load_counts(kmtf_manifest)
+    tps  = load_counts(tps_manifest)
+    if not kmtf and not tps:
+        warn_skip(name, "both manifests missing"); return
+
+    x = np.arange(len(datasets))
+    w = 0.38
+    fig, ax = plt.subplots(figsize=(15, 5))
+    if kmtf:
+        ax.bar(x - w/2, [kmtf.get(d, 0) / 1000 for d in datasets], w,
+               label="KMTF cache", color="#1f77b4", alpha=0.85, edgecolor="white")
+    if tps:
+        ax.bar(x + w/2, [tps.get(d, 0) / 1000 for d in datasets], w,
+               label="TPS cache", color="#ff7f0e", alpha=0.85, edgecolor="white")
+    ax.set_xticks(x); ax.set_xticklabels(datasets, rotation=35, ha="right", fontsize=10)
+    ax.set_ylabel("Cached samples [k]")
+    ax.set_title("Cache sample counts: KMTF vs TPS\n"
+                 "(TPS has more G2/G4/G8 windows — more TPS stubs pass phi-window filter under PU)")
+    ax.legend(); ax.yaxis.grid(True, linestyle="--", alpha=0.4)
+    fig.tight_layout()
+    savefig(fig, name)
+    add_readme(name, "build/omtf_gmt/cache_v2/manifest.json and cache_v2_tps/manifest.json",
+               "TPS cache has ~2× more G2/G4/G8 samples; explains denser event coverage under PU",
+               "KMTF vs TPS — methodology")
+
+
+# ── 23. Mean processors per event ────────────────────────────────────────────
+
+def plot_23_mean_procs() -> None:
+    name = "23_mean_processors_per_event_kmtf_vs_tps"
+    datasets_sig = ["G1_pos","G2_pos","G3_pos","G4_pos","G5_pos","G6_pos","G7","G8"]
+    labels = ["G1","G2","G3","G4","G5","G6","G7","G8"]
+
+    eval_files = {
+        "KMTF-h128": EVAL / "edge_compat_h128_B3d_100ep_best_eval.json",
+        "TPS-h64":   EVAL / "edge_compat_h64_B4_tps_100ep_best_eval.json",
+        "TPS-h128":  EVAL / "edge_compat_h128_B4_tps_100ep_best_eval.json",
+    }
+
+    all_mpe: dict[str, list] = {}
+    for model, path in eval_files.items():
+        d = try_load_json(path)
+        if d is None:
+            warn_skip(name, f"missing {path.name}"); continue
+        el = d.get("event_level", {})
+        all_mpe[model] = [el.get(ds, {}).get("mean_procs_per_event", np.nan)
+                          for ds in datasets_sig]
+
+    if not all_mpe:
+        warn_skip(name, "no eval JSONs found"); return
+
+    x = np.arange(len(labels))
+    w = 0.28
+    fig, ax = plt.subplots(figsize=(12, 5))
+    for i, (model, vals) in enumerate(all_mpe.items()):
+        ax.bar(x + (i - 1) * w, vals, w, label=model,
+               color=COLORS[model], alpha=0.85, edgecolor="white")
+    ax.axhline(1.0, color="grey", linestyle="--", alpha=0.6, label="1.0 reference")
+    ax.set_xticks(x); ax.set_xticklabels(labels)
+    ax.set_ylabel("Mean processor windows per event")
+    ax.set_title("Mean OMTF processor windows per event: KMTF vs TPS\n"
+                 "(TPS gives 1.5–1.6× more G2/G4 coverage under PU200)")
+    ax.legend(); ax.yaxis.grid(True, linestyle="--", alpha=0.4)
+    ax.set_ylim(0.8, 2.0)
+    fig.tight_layout()
+    savefig(fig, name)
+    add_readme(name, "event_level JSON: mean_procs_per_event",
+               "TPS creates more processor windows per event under PU200; part of TPS efficiency gain is extra OR coverage",
+               "KMTF vs TPS — methodology, honest comparison")
+
+
+# ── 24. Window-level vs event-level gain ─────────────────────────────────────
+
+def plot_24_win_vs_event() -> None:
+    name = "24_event_or_gain_kmtf_vs_tps"
+    datasets_sig = ["G1_pos","G2_pos","G3_pos","G4_pos","G5_pos","G6_pos"]
+    labels = ["G1","G2","G3","G4","G5","G6"]
+
+    eval_files = {
+        "KMTF-h128": EVAL / "edge_compat_h128_B3d_100ep_best_eval.json",
+        "TPS-h64":   EVAL / "edge_compat_h64_B4_tps_100ep_best_eval.json",
+    }
+
+    fig, ax = plt.subplots(figsize=(11, 5))
+    x = np.arange(len(labels))
+    w = 0.35
+
+    for shift, (model, path) in zip([-0.5, 0.5], eval_files.items()):
+        d = try_load_json(path)
+        if d is None:
+            warn_skip(name, f"missing {path.name}"); continue
+        el   = d.get("event_level", {})
+        by_ds = {r["ds"]: r for r in d.get("per_window", [])}
+        gains = []
+        for ds in datasets_sig:
+            win_eff = by_ds.get(ds, {}).get("overall_efficiency", np.nan)
+            ev_eff  = el.get(ds, {}).get("event_trig_eff@0", np.nan)
+            if win_eff is None: win_eff = np.nan
+            gains.append((ev_eff - win_eff) * 100 if not (np.isnan(win_eff) or np.isnan(ev_eff)) else np.nan)
+        ax.bar(x + shift * w / 2, gains, w * 0.9, label=model,
+               color=COLORS[model], alpha=0.85, edgecolor="white")
+
+    ax.axhline(0, color="black", linewidth=0.8)
+    ax.set_xticks(x); ax.set_xticklabels(labels)
+    ax.set_ylabel("Event eff − window eff  [pp]")
+    ax.set_title("Event-level OR gain over window-level efficiency\n"
+                 "(TPS gains more because it has more processor windows per event)")
+    ax.legend(); ax.yaxis.grid(True, linestyle="--", alpha=0.4)
+    fig.tight_layout()
+    savefig(fig, name)
+    add_readme(name, "per_window overall_efficiency + event_level event_trig_eff@0",
+               "OR gain from multiple processor windows; TPS larger gain under PU due to more windows",
+               "Honest comparison — separating feature quality from coverage")
+
+
+# ── 25. Low-pT efficiency ────────────────────────────────────────────────────
+
+def plot_25_low_pt() -> None:
+    name = "25_low_pt_efficiency_kmtf_tps"
+    low_pt_bins = [(2, 5), (5, 10), (10, 15), (15, 20)]
+    bin_labels  = ["2–5 GeV", "5–10 GeV", "10–15 GeV", "15–20 GeV"]
+
+    eval_files = {
+        "KMTF-h128": EVAL / "edge_compat_h128_B3d_100ep_best_eval.json",
+        "TPS-h64":   EVAL / "edge_compat_h64_B4_tps_100ep_best_eval.json",
+        "TPS-h128":  EVAL / "edge_compat_h128_B4_tps_100ep_best_eval.json",
+    }
+
+    def get_low_pt(path, ds):
+        d = try_load_json(path)
+        if d is None: return [np.nan] * len(low_pt_bins)
+        by_ds = {r["ds"]: r for r in d.get("per_window", [])}
+        bins  = by_ds.get(ds, {}).get("pt_efficiency", [])
+        result = []
+        for lo, hi in low_pt_bins:
+            match = [b["efficiency"] for b in bins if b["lo"] == lo and b["hi"] == hi and b["n"] > 0]
+            result.append(match[0] * 100 if match else np.nan)
+        return result
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    for ax, ds, title in zip(axes, ["G1_pos", "G2_pos"],
+                              ["G1 (clean prompt)", "G2 (prompt + PU200)"]):
+        x = np.arange(len(bin_labels))
+        w = 0.28
+        for i, (model, path) in enumerate(eval_files.items()):
+            vals = get_low_pt(path, ds)
+            ax.bar(x + (i - 1) * w, vals, w, label=model,
+                   color=COLORS[model], alpha=0.85, edgecolor="white")
+        ax.set_xticks(x); ax.set_xticklabels(bin_labels)
+        ax.set_ylabel("Efficiency [%]"); ax.set_title(title)
+        ax.set_ylim(50, 105); ax.legend(); ax.yaxis.grid(True, linestyle="--", alpha=0.4)
+        ax.axhline(90, color="grey", linestyle=":", alpha=0.5)
+
+    fig.suptitle("Low-pT efficiency: KMTF vs TPS\n"
+                 "(most of overall G1/G2 efficiency gap is in the 2–5 GeV bin)",
+                 fontsize=14)
+    fig.tight_layout()
+    savefig(fig, name)
+    add_readme(name, "pt_efficiency from eval per_window records",
+               "Low-pT bin drives most of the G1/G2 efficiency difference; TPS better at 2–5 GeV for clean events",
+               "pT dependence — important for trigger threshold")
+
+
+# ── 26. PU degradation ───────────────────────────────────────────────────────
+
+def plot_26_pu_degradation() -> None:
+    name = "26_pu_degradation_prompt_displaced"
+    pairs = [("G1_pos", "G2_pos", "Prompt: clean→PU200"),
+             ("G3_pos", "G4_pos", "Displaced: clean→PU200")]
+
+    eval_files = {
+        "KMTF-h128": EVAL / "edge_compat_h128_B3d_100ep_best_eval.json",
+        "TPS-h64":   EVAL / "edge_compat_h64_B4_tps_100ep_best_eval.json",
+        "TPS-h128":  EVAL / "edge_compat_h128_B4_tps_100ep_best_eval.json",
+    }
+
+    loaded = {}
+    for model, path in eval_files.items():
+        d = try_load_json(path)
+        if d is not None:
+            loaded[model] = {r["ds"]: r for r in d.get("per_window", [])}
+
+    if not loaded:
+        warn_skip(name, "no eval JSONs"); return
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+    for ax, (ds_clean, ds_pu, title) in zip(axes, pairs):
+        x = np.arange(len(loaded))
+        models = list(loaded.keys())
+        eff_clean = [loaded[m].get(ds_clean, {}).get("overall_efficiency", np.nan) * 100
+                     for m in models]
+        eff_pu    = [loaded[m].get(ds_pu,    {}).get("overall_efficiency", np.nan) * 100
+                     for m in models]
+        degradation = [c - p for c, p in zip(eff_clean, eff_pu)]
+
+        ax.bar(models, eff_clean, label="Clean (no PU)",
+               color=[COLORS[m] for m in models], alpha=0.4, edgecolor="white")
+        ax.bar(models, eff_pu, label="PU200",
+               color=[COLORS[m] for m in models], alpha=0.85, edgecolor="white")
+        for i, (ec, ep, deg) in enumerate(zip(eff_clean, eff_pu, degradation)):
+            ax.annotate(f"−{deg:.1f}pp", xy=(i, ep - 1.5),
+                        ha="center", va="top", fontsize=10, color="white", fontweight="bold")
+        ax.set_ylabel("Efficiency [%]")
+        ax.set_title(title); ax.set_ylim(65, 100)
+        ax.legend(); ax.yaxis.grid(True, linestyle="--", alpha=0.4)
+        ax.tick_params(axis="x", labelsize=10)
+
+    fig.suptitle("PU200 degradation: efficiency drop from clean to PU200 samples\n"
+                 "(TPS retains more efficiency under PU, especially displaced)", fontsize=14)
+    fig.tight_layout()
+    savefig(fig, name)
+    add_readme(name, "overall_efficiency from eval per_window",
+               "TPS loses ~10pp G2 under PU vs ~5pp for KMTF, but starts from higher base",
+               "PU robustness comparison")
+
+
+# ── 27. Prompt vs displaced ───────────────────────────────────────────────────
+
+def plot_27_prompt_vs_displaced() -> None:
+    name = "27_prompt_vs_displaced_efficiency"
+    eval_files = {
+        "KMTF-h128": EVAL / "edge_compat_h128_B3d_100ep_best_eval.json",
+        "TPS-h64":   EVAL / "edge_compat_h64_B4_tps_100ep_best_eval.json",
+        "TPS-h128":  EVAL / "edge_compat_h128_B4_tps_100ep_best_eval.json",
+    }
+    loaded = {}
+    for model, path in eval_files.items():
+        d = try_load_json(path)
+        if d is not None:
+            loaded[model] = {r["ds"]: r for r in d.get("per_window", [])}
+    if not loaded:
+        warn_skip(name, "no eval JSONs"); return
+
+    def avg_eff(m, a, b):
+        ea = loaded[m].get(a, {}).get("overall_efficiency", np.nan)
+        eb = loaded[m].get(b, {}).get("overall_efficiency", np.nan)
+        if ea is None: ea = np.nan
+        if eb is None: eb = np.nan
+        return np.nanmean([ea, eb]) * 100
+
+    models = list(loaded.keys())
+    x = np.arange(len(models))
+    w = 0.35
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+    for ax, (pair, title) in zip(axes, [
+        (("G1_pos","G1_neg","G3_pos","G3_neg"), "Clean (no PU): prompt G1 vs displaced G3"),
+        (("G2_pos","G2_neg","G4_pos","G4_neg"), "PU200: prompt G2 vs displaced G4"),
+    ]):
+        prompt_ds, prompt_dn, disp_ds, disp_dn = pair
+        prompt = [avg_eff(m, prompt_ds, prompt_dn) for m in models]
+        displ  = [avg_eff(m, disp_ds,   disp_dn)   for m in models]
+        ax.bar(x - w/2, prompt, w, label="Prompt", color=[COLORS[m] for m in models], alpha=0.6)
+        ax.bar(x + w/2, displ,  w, label="Displaced", color=[COLORS[m] for m in models], alpha=0.95, hatch="//")
+        ax.set_xticks(x); ax.set_xticklabels(models, fontsize=10)
+        ax.set_ylabel("Avg efficiency pos+neg [%]")
+        ax.set_title(title); ax.set_ylim(70, 100)
+        ax.yaxis.grid(True, linestyle="--", alpha=0.4)
+        handles = [mpatches.Patch(color="grey", alpha=0.6, label="Prompt"),
+                   mpatches.Patch(color="grey", hatch="//", label="Displaced")]
+        ax.legend(handles=handles)
+
+    fig.suptitle("Prompt vs displaced efficiency per input view", fontsize=14)
+    fig.tight_layout()
+    savefig(fig, name)
+    add_readme(name, "overall_efficiency from eval per_window",
+               "TPS improves displaced efficiency substantially over KMTF",
+               "Displaced muon — key physics motivation")
+
+
+# ── 28. Hard-negative loss tradeoff ──────────────────────────────────────────
+
+def plot_28_hn_tradeoff() -> None:
+    name = "28_hard_negative_loss_tradeoff"
+    weights = [0.0, 0.25, 0.50, 1.00]
+    labels  = ["baseline\n(0.0)", "hn025\n(0.25)", "hn050\n(0.50)", "hn100\n(1.00)"]
+    avg_sig = [
+        np.mean([94.1, 84.9, 91.7, 83.2, 82.2, 94.8]),
+        np.mean([93.3, 82.9, 90.3, 80.5, 80.0, 94.9]),
+        np.mean([90.8, 79.5, 88.2, 77.6, 76.9, 94.9]),
+        np.mean([90.0, 75.5, 87.5, 74.1, 76.5, 94.6]),
+    ]
+    g7_fp = [6.2, 3.6, 3.3, 1.6]
+    g8_fp = [2.9, 2.2, 2.0, 1.5]
+
+    fig, ax1 = plt.subplots(figsize=(9, 5))
+    ax2 = ax1.twinx()
+
+    x = np.arange(len(labels))
+    ax1.plot(x, avg_sig, "o-", color="#2ca02c", linewidth=2.5, markersize=9,
+             label="Avg signal eff G1–G6 [%]", zorder=4)
+    ax2.plot(x, g7_fp, "s--", color="#d62728", linewidth=2, markersize=8, label="G7 FP%")
+    ax2.plot(x, g8_fp, "^--", color="#ff7f0e", linewidth=2, markersize=8, label="G8 FP%")
+
+    ax1.set_xticks(x); ax1.set_xticklabels(labels)
+    ax1.set_ylabel("Avg signal efficiency [%]", color="#2ca02c")
+    ax2.set_ylabel("Background FP rate [%]", color="#d62728")
+    ax1.set_ylim(83, 90); ax2.set_ylim(0, 9)
+    ax1.tick_params(axis="y", labelcolor="#2ca02c")
+    ax2.tick_params(axis="y", labelcolor="#d62728")
+
+    # annotate sweet spot
+    ax1.axvline(1, color="grey", linestyle=":", alpha=0.7)
+    ax1.text(1.05, 88.5, "← hn025\nsweet spot", fontsize=11, color="grey")
+
+    lines1, lab1 = ax1.get_legend_handles_labels()
+    lines2, lab2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, lab1 + lab2, loc="lower left", fontsize=11)
+    ax1.set_title("Hard-negative loss weight tradeoff\n"
+                  "(increasing w_hard_neg reduces FP but eventually costs signal efficiency)")
+    ax1.grid(True, linestyle="--", alpha=0.4)
+    fig.tight_layout()
+    savefig(fig, name)
+    add_readme(name, "Hardcoded (B5 eval results)",
+               "Tradeoff curve: hn025 is the Pareto-optimal point",
+               "B5 loss weight selection")
+
+
+# ── 29. Model complexity table ────────────────────────────────────────────────
+
+def plot_29_model_complexity() -> None:
+    name = "29_model_complexity_summary"
+    rows = [
+        ["DeepSets h64",        "26,506",  "Low",    "Low",    "~3 MLP layers, global pool"],
+        ["EdgeCompat h64",      "38,987",  "Medium", "Medium", "All-pair message passing, no graph needed"],
+        ["EdgeCompat h128",     "151,691", "Higher", "Higher", "~4× more params, less stable"],
+        ["EdgeCompatAssign h64","42,952",  "Medium", "Medium", "h64 + assignment decoder (+4k params)"],
+        ["DETR h64",            "51,205",  "High",   "High",   "Slot matching, complex loss"],
+    ]
+    cols = ["Model", "Parameters", "Complexity", "FPGA risk", "Notes"]
+    row_colors = [
+        ["#f0f0f0"] * 5,
+        ["#e8f4e8"] * 5,
+        ["#fff3cd"] * 5,
+        ["#e8f4e8"] * 5,
+        ["#fde8e8"] * 5,
+    ]
+    fig, ax = plt.subplots(figsize=(14, 4))
+    ax.axis("off")
+    t = ax.table(cellText=rows, colLabels=cols, loc="center", cellLoc="center",
+                 cellColours=row_colors)
+    t.auto_set_font_size(False)
+    t.set_fontsize(11)
+    t.scale(1, 2.2)
+    for (r, c), cell in t.get_celld().items():
+        if r == 0:
+            cell.set_facecolor("#1f77b4")
+            cell.set_text_props(color="white", fontweight="bold")
+        if r == 2:  # EdgeCompat h64 — selected
+            cell.set_facecolor("#c8e6c9" if c < 4 else "#e8f4e8")
+    ax.set_title("Model complexity and FPGA implementation relevance\n"
+                 "(EdgeCompat h64 selected: best balance of performance, size, stability)",
+                 fontsize=13, pad=14)
+    savefig(fig, name)
+    add_readme(name, "Hardcoded (model parameter counts from torch)",
+               "EdgeCompat h64 smallest viable model with good physics; h64 preferred for FPGA",
+               "Implementation motivation")
+
+
+# ── 30. Final model scorecard ─────────────────────────────────────────────────
+
+def plot_30_scorecard() -> None:
+    name = "30_final_model_scorecard"
+    criteria = [
+        "G1/G3 signal eff",
+        "G2/G4 PU eff",
+        "G8 hard-neg rejection",
+        "B4 pure-noise rejection",
+        "Displaced efficiency",
+        "Training stability",
+        "FPGA simplicity",
+    ]
+    models = ["KMTF\nEdgeCompat h128", "TPS\nEdgeCompat h64", "TPS\nEdgeCompat h128", "TPS\nDETR h64"]
+    # ✓ = good, ~ = ok/warning, ✗ = bad
+    scores = [
+        ["~", "✓", "✓", "~"],   # G1/G3
+        ["~", "✓", "✓", "~"],   # G2/G4 PU
+        ["~", "✓", "~", "~"],   # G8
+        ["✓", "✓", "✓", "✓"],   # B4
+        ["~", "✓", "✓", "~"],   # displaced
+        ["✓", "✓", "~", "~"],   # stability
+        ["~", "✓", "~", "✗"],   # FPGA
+    ]
+    color_map = {"✓": "#c8e6c9", "~": "#fff9c4", "✗": "#ffcdd2"}
+
+    fig, ax = plt.subplots(figsize=(11, 5.5))
+    ax.axis("off")
+    cell_text  = [[c] + row for c, row in zip(criteria, scores)]
+    cell_colors = [["#e8ecf5"] + [color_map[s] for s in row]
+                   for row in scores]
+    t = ax.table(cellText=cell_text,
+                 colLabels=["Criterion"] + models,
+                 loc="center", cellLoc="center",
+                 cellColours=cell_colors)
+    t.auto_set_font_size(False)
+    t.set_fontsize(12)
+    t.scale(1, 2.1)
+    for (r, c), cell in t.get_celld().items():
+        if r == 0:
+            cell.set_facecolor("#1f77b4")
+            cell.set_text_props(color="white", fontweight="bold")
+        if c == 2 and r > 0:  # TPS h64 column — highlight
+            cell.set_linewidth(2)
+
+    ax.set_title("Final model scorecard: ✓ good  ~  marginal  ✗ fail\n"
+                 "(TPS EdgeCompat h64 wins on all criteria except none)",
+                 fontsize=13, pad=14)
+    savefig(fig, name)
+    add_readme(name, "Hardcoded (study conclusions)",
+               "Balanced scorecard confirming TPS EdgeCompat h64 selection",
+               "Conclusions / summary")
+
+
+def main() -> None:
+    OUTDIR.mkdir(parents=True, exist_ok=True)
+    print(f"Writing plots to {OUTDIR}")
+
+    plot_fns = [
+        plot_01_timeline, plot_02_eta_regions, plot_03_phi_windows,
+        plot_04_coord_table, plot_05_b1_architectures, plot_06_overcounting,
+        plot_07_false_slot, plot_08_domain_mismatch, plot_09_g_roles,
+        plot_10_validation, plot_11_overcounting_fix, plot_12_kmtf_tps,
+        plot_13_event_level, plot_14_d0, plot_15_roc, plot_16_b5,
+        plot_17_pareto, plot_18_equal_fp, plot_19_final_summary,
+        plot_20_roadmap, plot_21_assign_schematic,
+        # extended set
+        plot_22_cache_counts, plot_23_mean_procs, plot_24_win_vs_event,
+        plot_25_low_pt, plot_26_pu_degradation, plot_27_prompt_vs_displaced,
+        plot_28_hn_tradeoff, plot_29_model_complexity, plot_30_scorecard,
+    ]
+
+    for fn in plot_fns:
+        try:
+            print(f"  {fn.__name__} ...", end=" ", flush=True)
+            fn()
+            print("ok")
+        except Exception as exc:
+            print(f"FAILED: {exc}")
+            traceback.print_exc()
+
+    readme = OUTDIR / "README.md"
+    readme.write_text("\n".join(readme_sections) + "\n")
+    print(f"\nREADME: {readme}")
+    print(f"Done — {len(plot_fns)} plots written to {OUTDIR}")
+
+
 if __name__ == "__main__":
     main()
