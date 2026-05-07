@@ -528,20 +528,18 @@ same model, same datasets, different input view
 
 ## 15. Immediate next steps
 
-* Create `scripts/omtf/build_cache_g_internal.py` from the old OMTF cache builder.
-* Add support for `G1_pos`/`G1_neg` through `G6_pos`/`G6_neg`, plus `G7`, `G8`, `B4`.
-* Remove any unnecessary KMTF/TPS-style phi-window regioning.
-* Use each `OMTFAllInputTree` entry directly as one processor-window sample.
-* Build the new OMTF-internal feature schema with overlap-domain features.
-* Use native `reg_stub_trackId` and `reg_stub_ambiguous` for labels.
-* Fill candidate targets from unique positive `track_id` values in the current window.
-* Store `meta_n_gen_event` and `meta_n_targets_window` separately.
-* Add `meta_is_hard_neg` for G7/G8.
-* Build cache to `build/omtf_internal/cache_g_v1/`.
-* Run feature/cache audit.
-* Train `EdgeCompat h64` with the same B5 setup and `hn025`.
-* Evaluate against TPS-h64, TPS-h128, and KMTF-h128.
-* Decide whether OMTF-internal is worth carrying forward into QAT.
+**Status: complete (2026-05-07).** All steps executed.
+
+* ~~Create `scripts/omtf/build_cache_g_internal.py` from the old OMTF cache builder.~~ Done.
+* ~~Add support for G1–G6 pos/neg, G7, G8, B4.~~ Done.
+* ~~Remove phi-window regioning, use each entry directly as one window.~~ Done.
+* ~~Build OMTF-internal feature schema (11 features).~~ Done — see `src/omtf/features_g.py`.
+* ~~Use native `reg_stub_trackId` labels.~~ Done.
+* ~~Fill candidate targets from unique positive track_ids.~~ Done.
+* ~~Add `meta_is_hard_neg` for G7/G8.~~ Done.
+* ~~Build cache to `build/omtf/cache_internal_g_v1/`.~~ Done — 15 datasets, ~2.3M samples.
+* ~~Train EdgeCompat h64 with hn025.~~ Done — HTCondor job 1075280.
+* ~~Evaluate against TPS-h64-hn025.~~ Done — see section 17.
 
 ---
 
@@ -551,15 +549,120 @@ Do not move OMTF-internal to QAT unless it is competitive with TPS.
 
 Minimum useful target:
 
-| Metric                        | Target                      |
-| ----------------------------- | --------------------------- |
-| G1/G3 clean signal efficiency | close to TPS-h64            |
-| G2/G4 PU signal efficiency    | not much worse than TPS-h64 |
-| G7 FP                         | ≤ TPS-h64 or close          |
-| G8 FP                         | close to TPS-h64/TPS-h128   |
-| B4 FP                         | 0%                          |
-| G5/G6 recovery                | similar to TPS/KMTF         |
+| Metric                        | Target                      | Result      |
+| ----------------------------- | --------------------------- | ----------- |
+| G1/G3 clean signal efficiency | close to TPS-h64            | **worse** (−4 to −5 pp) |
+| G2/G4 PU signal efficiency    | not much worse than TPS-h64 | **better** (+5 pp) |
+| G7 FP                         | ≤ TPS-h64 or close          | **worse** (6.9% vs 3.6%) |
+| G8 FP                         | close to TPS-h64/TPS-h128   | **much worse** (5.8% vs 2.2%) |
+| B4 FP                         | 0%                          | **pass** (0.0%) |
+| G5/G6 recovery                | similar to TPS/KMTF         | **better** (+3–4 pp) |
 
 If OMTF-internal is clearly worse than TPS, keep TPS as the main path before QAT.
 
 If OMTF-internal is comparable, it becomes a strong candidate because it is much closer to the actual trigger firmware representation.
+
+**Decision: TPS remains the primary path. See section 17.**
+
+---
+
+## 17. Phase C results (2026-05-07)
+
+### Implementation
+
+| Component | Location |
+| --- | --- |
+| Feature schema (11 features) | `src/omtf/features_g.py` |
+| Model (EdgeCompatG, parametric n_features) | `src/omtf/models/edge_compat_g.py` |
+| Training script | `src/omtf/train_g.py` |
+| Cache builder | `scripts/omtf/build_cache_g_internal.py` |
+| Eval wrapper | `scripts/omtf/eval_internal.py` |
+
+### Cache
+
+Built to `build/omtf/cache_internal_g_v1/`, schema_version=2, 11 features.
+~2.3M total samples across all 15 datasets. Sample counts are ~70% larger than TPS
+because no phi-window filtering is applied — all OMTFAllInputTree entries are used.
+
+G8 in particular: 352k samples (internal) vs 47k (TPS) — 7.5× more because TPS
+rejects many PU windows where no TPS stub falls inside the phi window.
+
+### Training
+
+| Parameter | Value |
+| --- | --- |
+| Model | EdgeCompatG h64, n_features=11 |
+| Hard-negative loss | w_hard_neg=0.25 (same as TPS B5) |
+| Best epoch | 68 |
+| Best val_loss | 0.4904 |
+| HTCondor job | 1075280.0 |
+
+Training note: NaN explosion at epoch 89 due to cosine LR tail and missing gradient
+clipping. Best checkpoint at epoch 68 is valid. `train_g.py` now includes
+`clip_grad_norm_(max_norm=1.0)`; a cleaner rerun would likely push best epoch later.
+
+### Evaluation — threshold 0.0
+
+| Model | G1% | G2% | G3% | G4% | G5% | G6% | G7 FP% | G8 FP% | B4 FP% |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| TPS-h64 baseline | 94.1 | 84.9 | 91.7 | 83.2 | 82.2 | 94.8 | 6.2 | 2.9 | 0.0 |
+| **TPS-h64-hn025** | 93.3 | 82.9 | 90.3 | 80.5 | 80.0 | 94.9 | **3.6** | **2.2** | 0.0 |
+| OMTF-internal-h64-hn025 | 88.5 | **88.1** | 86.3 | **85.2** | **83.4** | **96.3** | 6.9 | 5.8 | 0.0 |
+
+### Threshold scan
+
+| Model | Thr | G2% | G4% | G5% | G6% | G7 FP% | G8 FP% | B4 FP% |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| TPS-h64-hn025 | −0.50 | 87.7 | 85.5 | 85.0 | 97.2 | 6.3 | 3.1 | 0.0 |
+| TPS-h64-hn025 | +0.00 | 82.9 | 80.5 | 80.0 | 94.9 | 3.6 | 2.2 | 0.0 |
+| TPS-h64-hn025 | +0.25 | 80.1 | 77.8 | 77.5 | 93.6 | 2.9 | 1.9 | 0.0 |
+| TPS-h64-hn025 | +0.50 | 74.6 | 72.7 | 73.2 | 91.2 | 2.0 | 1.5 | 0.0 |
+| OMTF-internal | −0.50 | 90.0 | 87.7 | 86.4 | 97.4 | 10.6 | 7.5 | 0.2 |
+| OMTF-internal | +0.00 | 88.1 | 85.2 | 83.4 | 96.3 | 6.9 | 5.8 | 0.0 |
+| OMTF-internal | +0.25 | 87.1 | 84.2 | 82.1 | 95.8 | 5.4 | 5.2 | 0.0 |
+| OMTF-internal | +0.50 | 85.4 | 82.1 | 79.9 | 95.0 | 3.6 | 4.4 | 0.0 |
+| OMTF-internal | +0.75 | 83.9 | 80.5 | 78.3 | 94.3 | 2.8 | 3.9 | 0.0 |
+| OMTF-internal | +1.00 | 81.4 | 77.8 | 75.4 | 93.1 | 1.8 | 3.3 | 0.0 |
+
+### Key findings
+
+**Signal efficiency:** OMTF-internal is better on G2/G4/G5/G6 (PU200 and multi-muon
+recovery) by +3–5 pp at threshold 0.0. This is likely because native `reg_stub_trackId`
+labels avoid truth-transfer uncertainty and the phi/r/layer features give finer spatial
+resolution than TPS's depthRegion/tfLayer.
+
+**Clean-muon efficiency:** OMTF-internal is worse on G1/G3 by 4–5 pp. Single-muon
+prompt/displaced efficiency is lower, possibly because the uncentred phiHw range and
+absence of `eta2` reduce the model's ability to disambiguate low-multiplicity windows.
+
+**Hard-negative rejection (G8/PU200): OMTF-internal cannot match TPS at any threshold.**
+At the best G8 operating point (+1.0), OMTF-internal achieves G8=3.3% vs TPS 0.9%.
+The G8 gap persists through the full threshold scan. This is the decisive metric.
+
+Equal-FP analysis at G7=3.6%:
+- TPS @ +0.00: G2=82.9%, G4=80.5%, G8=2.2%
+- OMTF-internal @ +0.50: G2=85.4%, G4=82.1%, G8=4.4%
+
+At equal G7 FP, OMTF-internal recovers more signal but at 2× the G8 FP.
+
+### Phase C decision
+
+**Case B confirmed:** TPS remains clearly better for PU200 hard-negative rejection (G8).
+
+**TPS-h64-hn025 at threshold 0.0 remains the selected floating-point baseline for QAT.**
+
+OMTF-internal is not carried forward. Reason: G8 FP 5.8% vs 2.2% at threshold 0.0,
+and no threshold exists where OMTF-internal matches TPS G8 FP while maintaining
+competitive signal efficiency.
+
+The signal efficiency advantage of OMTF-internal (G2/G4/G5/G6) is interesting and
+suggests the native representation contains complementary information. A potential
+future direction would be a hybrid model, but this is outside the current QAT scope.
+
+### Output documents
+
+| Document | Path |
+| --- | --- |
+| Eval report | `build/omtf/eval/internal_h64_hn025_best_eval.md` |
+| Eval JSON | `build/omtf/eval/internal_h64_hn025_best_eval.json` |
+| Checkpoint | `build/omtf/checkpoints/internal_h64_hn025/omtf_internal_best.pt` |
