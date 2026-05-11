@@ -58,7 +58,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-_REPO = Path(__file__).resolve().parents[2]
+_REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO / "src"))
 
 from omtf_gmt.regioning      import stubs_in_window, phi_rel, omtf_phi_to_global_rad, angle_diff

@@ -1,6 +1,6 @@
 universe    = vanilla
 initialdir  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls
-executable  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/scripts/omtf_gmt/run_validate_g_datasets_full.sh
+executable  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/pipeline/validate.sh
 arguments   = $(dataset)
 
 should_transfer_files = NO

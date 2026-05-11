@@ -1,6 +1,6 @@
 universe    = vanilla
 initialdir  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls
-executable  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/scripts/omtf_gmt/run_make_cache_das_tps.sh
+executable  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/pipeline/build_das_cache.sh
 should_transfer_files = NO
 getenv = True
 request_cpus   = 4

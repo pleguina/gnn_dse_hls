@@ -51,7 +51,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-_REPO = Path(__file__).resolve().parents[2]
+_REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO / "src"))
 
 from omtf_gmt.dataset import GMTCachedDataset, collate_gmt, expand_datasets

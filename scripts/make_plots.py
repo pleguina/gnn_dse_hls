@@ -25,7 +25,7 @@ import matplotlib.patches as mpatch
 from matplotlib.patches import FancyArrowPatch
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 OUTDIR = ROOT / "build/omtf_gmt/plots"
 EVAL   = ROOT / "build/omtf_gmt/eval"
 

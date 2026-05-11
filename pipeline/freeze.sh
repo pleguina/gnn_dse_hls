@@ -3,7 +3,7 @@
 # Creates build/omtf_gmt/checkpoints/frozen_fp32_tps_edgecompat_h64/ with all
 # artefacts needed for QAT, HLS, and external DAS validation.
 set -euo pipefail
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 PYTHON="$ROOT_DIR/venv/bin/python"
 

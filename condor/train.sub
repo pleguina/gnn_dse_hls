@@ -13,5 +13,5 @@ error  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/build/condor/g9g10_train.$(Clus
 
 executable = $(script)
 queue script from (
-  /lhome/ext/uovi156/uovi1562/gnn_dse_hls/scripts/omtf_gmt/run_train_eval_tps_h64_g9g10_runc.sh
+  /lhome/ext/uovi156/uovi1562/gnn_dse_hls/pipeline/train_runc.sh
 )

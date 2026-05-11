@@ -34,7 +34,7 @@ from typing import Any
 
 import numpy as np
 
-_REPO = Path(__file__).resolve().parents[2]
+_REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO / "src"))
 
 try:

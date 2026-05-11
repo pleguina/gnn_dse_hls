@@ -2,7 +2,7 @@
 # G9/G10 high-eta hard-neg retraining: Run C — w_hard_neg=0.10 (softer pressure)
 # Use only if Run A hurts G1-G6 signal efficiency.
 set -euo pipefail
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 PYTHON="$ROOT_DIR/venv/bin/python"
 OUTDIR="build/omtf_gmt/checkpoints/edge_compat_h64_tps_g9g10_runc"
@@ -27,7 +27,7 @@ echo "=== TRAIN edge_compat h64 TPS g9g10 Run C (w_hard_neg=0.10) ==="
     --device     cuda
 
 echo "=== EVAL best ==="
-"$PYTHON" -u scripts/omtf_gmt/eval_gmt.py \
+"$PYTHON" -u scripts/eval.py \
     --checkpoint "$OUTDIR/gmt_edge_compat_best.pt" \
     --cache-dir  build/omtf_gmt/cache_v2_tps \
     --datasets   G1 G2 G3 G4 G5 G6 G7 G8 G9 G10 B4 \

@@ -1,6 +1,6 @@
 universe    = vanilla
 initialdir  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls
-executable  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/scripts/omtf_gmt/run_eval_das.sh
+executable  = /lhome/ext/uovi156/uovi1562/gnn_dse_hls/pipeline/eval_das.sh
 should_transfer_files = NO
 getenv = True
 request_cpus   = 4

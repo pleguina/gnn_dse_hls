@@ -13,17 +13,20 @@ The full development history lives on the `omtf-migration` branch.
 ## What is in this branch
 
 ```
-src/omtf_gmt/                   Python package (dataset, features, train, models)
-scripts/omtf_gmt/               All pipeline scripts and HTCondor submit files
-docs/omtf/ROOT_BRANCHES.md      NanoAOD branch reference
-requirements.txt                Python dependencies
+src/omtf_gmt/           Python package  (dataset, features, train, models)
+scripts/                Standalone Python pipeline scripts
+pipeline/               Shell scripts, one per stage
+condor/                 HTCondor submit files
+docs/omtf/              Documentation
 artifacts/
   models/
-    hn025_baseline/             TPS EdgeCompat h64, G7/G8 only (pre-G9/G10)
-    g9g10_runa_frozen/          Frozen FP32 baseline (Run A, this model)
+    hn025_baseline/     TPS EdgeCompat h64, G7/G8 only  (pre-G9/G10)
+    g9g10_runa_frozen/  Frozen FP32 baseline  (Run A)
   plots/
-    presentation/               43 study plots generated with hn025 baseline
-    das_validation/             7 DAS external validation plots (Run A)
+    presentation/       43 study plots  (hn025 baseline)
+    das_validation/     7 DAS external validation plots  (Run A)
+requirements.txt
+README.md
 ```
 
 ---
@@ -56,37 +59,37 @@ pip install -r requirements.txt
 ### 1. Build the TPS cache (G1–G8 + B4)
 
 ```bash
-bash scripts/omtf_gmt/run_make_gmt_dataset_tps.sh
-# HTCondor: condor_submit scripts/omtf_gmt/gmt_dataset_tps_htcondor.sub
+bash pipeline/build_cache.sh
+# HTCondor: condor_submit condor/build_cache.sub
 ```
 
 ### 2. Validate G1–G8 datasets
 
 ```bash
-bash scripts/omtf_gmt/run_validate_g_datasets_full.sh G1
+bash pipeline/validate.sh G1
 # repeat for G2–G8
-# HTCondor: condor_submit scripts/omtf_gmt/validate_g_datasets_full_htcondor.sub
+# HTCondor: condor_submit condor/validate.sub
 ```
 
 ### 3. Append G9/G10 to the cache
 
 ```bash
-bash scripts/omtf_gmt/run_append_cache_tps_g9g10.sh
-# HTCondor: condor_submit scripts/omtf_gmt/gmt_dataset_tps_g9g10_htcondor.sub
+bash pipeline/append_g9g10.sh
+# HTCondor: condor_submit condor/append_g9g10.sub
 ```
 
 ### 4. Validate G9/G10 datasets
 
 ```bash
-bash scripts/omtf_gmt/run_validate_g9g10.sh G9
-bash scripts/omtf_gmt/run_validate_g9g10.sh G10
+bash pipeline/validate.sh G9
+bash pipeline/validate.sh G10
 ```
 
 ### 5. Train Run A (the selected model)
 
 ```bash
-bash scripts/omtf_gmt/run_train_eval_tps_h64_g9g10_runa.sh
-# HTCondor: condor_submit scripts/omtf_gmt/train_eval_g9g10_htcondor.sub
+bash pipeline/train_runa.sh
+# HTCondor: condor_submit condor/train.sub
 ```
 
 Run B (w_hard_neg=0.50) and Run C (w_hard_neg=0.10) are available as reference.
@@ -97,7 +100,7 @@ Run A was selected: best G9/G10 rejection without regressing G7/G8 or B4.
 Included in the train script above. To re-run standalone:
 
 ```bash
-python scripts/omtf_gmt/eval_gmt.py \
+python scripts/eval.py \
     --checkpoint build/omtf_gmt/checkpoints/edge_compat_h64_tps_g9g10_runa/gmt_edge_compat_best.pt \
     --cache-dir  build/omtf_gmt/cache_v2_tps \
     --datasets   G1 G2 G3 G4 G5 G6 G7 G8 G9 G10 B4 \
@@ -107,28 +110,28 @@ python scripts/omtf_gmt/eval_gmt.py \
 ### 7. Freeze the checkpoint
 
 ```bash
-bash scripts/omtf_gmt/freeze_checkpoint_runa.sh
+bash pipeline/freeze.sh
 # writes build/omtf_gmt/checkpoints/frozen_fp32_tps_edgecompat_h64/
 ```
 
 ### 8. Build DAS external validation cache
 
 ```bash
-bash scripts/omtf_gmt/run_make_cache_das_tps.sh
-# HTCondor: condor_submit scripts/omtf_gmt/gmt_dataset_das_tps_htcondor.sub
+bash pipeline/build_das_cache.sh
+# HTCondor: condor_submit condor/build_das_cache.sub
 ```
 
 ### 9. Evaluate on DAS samples (overlap eta-filtered)
 
 ```bash
-bash scripts/omtf_gmt/run_eval_das_filtered.sh
-# HTCondor: condor_submit scripts/omtf_gmt/eval_das_filtered_htcondor.sub
+bash pipeline/eval_das_filtered.sh
+# HTCondor: condor_submit condor/eval_das_filtered.sub
 ```
 
 ### 10. Generate validation plots
 
 ```bash
-bash scripts/omtf_gmt/run_das_validation_plots.sh --device cpu
+bash pipeline/plots.sh --device cpu
 ```
 
 Produces 7 plots in `build/omtf_gmt/plots/das_validation/`:
