@@ -1,20 +1,20 @@
 #!/usr/bin/env python
 """
-Validation gate for new GMT/OMTF overlap datasets (G1–G8).
+Validation gate for new GMT/OMTF overlap datasets (G1–G10).
 
 Runs 10 physics checks and writes a Markdown report, JSON summary, and CSV.
 
 Usage (quick subset):
     python scripts/omtf_gmt/validate_new_gmt_datasets.py \
         --data-dir data/prod \
-        --datasets G1 G2 G3 G4 G5 G6 G7 G8 \
+        --datasets G1 G2 G3 G4 G5 G6 G7 G8 G9 G10 \
         --files-per-dataset 20 \
         --output build/omtf_gmt/eval/new_dataset_validation.md
 
 Usage (full production):
     python scripts/omtf_gmt/validate_new_gmt_datasets.py \
         --data-dir data/prod \
-        --datasets G1 G2 G3 G4 G5 G6 G7 G8 \
+        --datasets G1 G2 G3 G4 G5 G6 G7 G8 G9 G10 \
         --all-files \
         --output build/omtf_gmt/eval/new_dataset_validation_full.md
 """
@@ -60,41 +60,49 @@ DATASET_NAMES = {
     "G6": "triPromptOverlap_PU200",
     "G7": "hardNegLowEtaMuon",
     "G8": "hardNegLowEtaMuon_PU200",
+    "G9":  "hardNegHighEtaMuon",
+    "G10": "hardNegHighEtaMuon_PU200",
 }
 
 EXPECTED_N_GEN = {
     "G1": 1, "G2": 1, "G3": 1, "G4": 1,
     "G5": 2, "G6": 3, "G7": 1, "G8": 1,
+    "G9": 1, "G10": 1,
 }
 
 EXPECTED_OVERLAP_TARGET_MULT = {
     "G1": 1, "G2": 1, "G3": 1, "G4": 1,
     "G5": 2, "G6": 3, "G7": 0, "G8": 0,
+    "G9": 0, "G10": 0,
 }
 
 # pT ranges [min, max] in GeV
 PT_RANGE = {
     "G1": (2, 200), "G2": (2, 200), "G3": (2, 200), "G4": (2, 200),
     "G5": (2, 200), "G6": (5, 80),  "G7": (2, 200), "G8": (2, 200),
+    "G9": (2, 200), "G10": (2, 200),
 }
 
 # prompt vs displaced
-PROMPT_DATASETS  = {"G1", "G2", "G6", "G7", "G8"}
+PROMPT_DATASETS  = {"G1", "G2", "G6", "G7", "G8", "G9", "G10"}
 DISPLACED_DATASETS = {"G3", "G4", "G5"}
 DXY_RANGE = {
     "G3": (0, 50), "G4": (0, 50), "G5": (0, 30),
 }
-PU200_DATASETS = {"G2", "G4", "G5", "G6", "G8"}
+PU200_DATASETS = {"G2", "G4", "G5", "G6", "G8", "G10"}
 
 IN_OVERLAP_LO = 0.82
 IN_OVERLAP_HI = 1.24
 LOW_ETA_MAX   = 0.75
-SIGNAL_DATASETS = {"G1", "G2", "G3", "G4", "G5", "G6"}
-HARD_NEG_DATASETS = {"G7", "G8"}
+HIGH_ETA_MIN  = 1.24   # |eta| lower bound for G9/G10 high-eta hard negatives
+SIGNAL_DATASETS   = {"G1", "G2", "G3", "G4", "G5", "G6"}
+HARD_NEG_DATASETS = {"G7", "G8", "G9", "G10"}
+LOW_ETA_DATASETS  = {"G7", "G8"}    # barrel-side hard negatives
+HIGH_ETA_DATASETS = {"G9", "G10"}   # endcap-side hard negatives
 
-# G1–G6 are split into <DS>_pos and <DS>_neg subdirectories on disk.
-# G7 and G8 are single directories.
-SPLIT_DATASETS = {"G1", "G2", "G3", "G4", "G5", "G6"}
+# G1–G6 and G9/G10 are split into <DS>_pos and <DS>_neg subdirectories on disk.
+# G7/G8 and B4 are single directories.
+SPLIT_DATASETS = {"G1", "G2", "G3", "G4", "G5", "G6", "G9", "G10"}
 
 
 def _dataset_dirs(ds: str, data_dir: Path) -> list[Path]:
@@ -170,6 +178,7 @@ class DatasetResult:
     frac_vertex_in_overlap: float = 0.0
     frac_st2_in_overlap:    float = 0.0
     frac_low_eta:           float = 0.0
+    frac_high_eta:          float = 0.0
 
     # 3.4 pT / dXY
     pt_stats: dict  = field(default_factory=dict)
@@ -393,8 +402,10 @@ def accumulate_gen_and_charge(r: DatasetResult, ds: str, hits_files: list[Path])
         frac_s2 = float("nan")
     r.frac_st2_in_overlap = frac_s2
 
-    frac_low = float(np.mean(np.abs(v_eta) < LOW_ETA_MAX)) if len(v_eta) else 0.0
-    r.frac_low_eta = frac_low
+    frac_low  = float(np.mean(np.abs(v_eta) < LOW_ETA_MAX))  if len(v_eta) else 0.0
+    frac_high = float(np.mean(np.abs(v_eta) > HIGH_ETA_MIN)) if len(v_eta) else 0.0
+    r.frac_low_eta  = frac_low
+    r.frac_high_eta = frac_high
 
     # Use station-2 (propagated) eta as the primary overlap metric when available and
     # reliable; fall back to vertex eta.  Station-2 eta is more relevant for trigger
@@ -428,10 +439,9 @@ def accumulate_gen_and_charge(r: DatasetResult, ds: str, hits_files: list[Path])
             r.checks["eta_domain"] = CheckResult(
                 FAIL, f"{eta_src} overlap fraction={eta_metric:.3f} — eta filter likely missing"
             )
-    else:  # G7/G8 hard negatives
-        # For hard-neg, the low-eta metric uses vertex eta (station-2 propagation for
-        # barrel muons at |eta|<0.75 is unreliable).  The overlap veto still uses the
-        # propagated metric to catch muons that reach the overlap boundary.
+    elif ds in LOW_ETA_DATASETS:  # G7/G8: barrel-side hard negatives
+        # Low-eta metric uses vertex eta (station-2 propagation for barrel muons
+        # at |eta|<0.75 is unreliable).  Overlap veto uses the propagated metric.
         if eta_metric <= 0.05 and frac_low >= 0.80:
             r.checks["eta_domain"] = CheckResult(PASS)
         elif eta_metric <= 0.20:
@@ -445,6 +455,23 @@ def accumulate_gen_and_charge(r: DatasetResult, ds: str, hits_files: list[Path])
                 FAIL,
                 f"hard-neg has {eta_src} overlap fraction={eta_metric:.3f} "
                 f"— eta range overlaps acceptance"
+            )
+    else:  # G9/G10: endcap-side hard negatives (|eta| > 1.24)
+        # High-eta muons should not reach the OMTF overlap band (0.82–1.24).
+        # Confirm with vertex eta that most muons are above the overlap edge.
+        if eta_metric <= 0.05 and frac_high >= 0.80:
+            r.checks["eta_domain"] = CheckResult(PASS)
+        elif eta_metric <= 0.20:
+            r.checks["eta_domain"] = CheckResult(
+                WARN,
+                f"{eta_src} overlap fraction={eta_metric:.3f}, "
+                f"high-eta (vertex, |eta|>{HIGH_ETA_MIN}) fraction={frac_high:.3f}"
+            )
+        else:
+            r.checks["eta_domain"] = CheckResult(
+                FAIL,
+                f"hard-neg has {eta_src} overlap fraction={eta_metric:.3f} "
+                f"— eta range overlaps OMTF acceptance"
             )
 
     # --- 3.4 pT / dXY ---
@@ -681,16 +708,29 @@ def check_kmtf_stubs(r: DatasetResult, ds: str, hits_files: list[Path]) -> None:
     r.mean_kmtf_stubs_per_event = total_stubs / max(1, n_events_seen)
     r.frac_kmtf_in_overlap = in_overlap / max(1, total_stubs)
 
-    if ds in HARD_NEG_DATASETS:
-        # G7/G8: must have stubs, but mostly outside overlap
+    if ds in LOW_ETA_DATASETS:
+        # G7/G8: barrel muons must have real barrel stubs, mostly outside overlap
         if total_stubs == 0:
             r.checks["kmtf_stubs"] = CheckResult(
-                FAIL, "no KMTF barrel stubs found — hard negatives must have real barrel stubs"
+                FAIL, "no KMTF barrel stubs found — barrel hard negatives must have real barrel stubs"
             )
         elif r.frac_kmtf_in_overlap > 0.30:
             r.checks["kmtf_stubs"] = CheckResult(
                 WARN,
                 f"frac_in_overlap={r.frac_kmtf_in_overlap:.3f} is high for hard negatives"
+            )
+        else:
+            r.checks["kmtf_stubs"] = CheckResult(PASS)
+    elif ds in HIGH_ETA_DATASETS:
+        # G9/G10: endcap muons — zero or few barrel stubs is expected
+        if total_stubs == 0:
+            r.checks["kmtf_stubs"] = CheckResult(
+                WARN, "no KMTF barrel stubs (expected for endcap muons at |eta|>1.24)"
+            )
+        elif r.frac_kmtf_in_overlap > 0.30:
+            r.checks["kmtf_stubs"] = CheckResult(
+                WARN,
+                f"frac_in_overlap={r.frac_kmtf_in_overlap:.3f} is high for high-eta hard negatives"
             )
         else:
             r.checks["kmtf_stubs"] = CheckResult(PASS)
@@ -807,12 +847,25 @@ def check_truth_transfer(r: DatasetResult, ds: str, hits_files: list[Path]) -> N
     pass_thresh = 0.55 if is_pu else 0.80
     fail_thresh = 0.35 if is_pu else 0.60
 
-    if ds in HARD_NEG_DATASETS:
-        # Hard negatives: KMTF stubs must be present (barrel muons produce real stubs),
-        # but signal transfer into the *overlap eta band* should be near-zero.
+    if ds in LOW_ETA_DATASETS:
+        # G7/G8: barrel muons produce real stubs; absence of stubs is a hard failure
         if n_stubs == 0:
             r.checks["truth_transfer"] = CheckResult(
                 FAIL, "no KMTF stubs — cannot validate truth transfer"
+            )
+        elif n_sig_xfer_overlap / max(1, n_stubs) > 0.10:
+            r.checks["truth_transfer"] = CheckResult(
+                FAIL,
+                f"hard-neg has {n_sig_xfer_overlap} signal-transferred stubs "
+                f"in overlap eta — overlap targets should be 0"
+            )
+        else:
+            r.checks["truth_transfer"] = CheckResult(PASS)
+    elif ds in HIGH_ETA_DATASETS:
+        # G9/G10: endcap muons may have zero KMTF barrel stubs — that is expected
+        if n_stubs == 0:
+            r.checks["truth_transfer"] = CheckResult(
+                WARN, "no KMTF barrel stubs for high-eta sample (expected for endcap muons)"
             )
         elif n_sig_xfer_overlap / max(1, n_stubs) > 0.10:
             r.checks["truth_transfer"] = CheckResult(
@@ -1128,15 +1181,15 @@ def render_markdown(results: list[DatasetResult], n_files_used: int | None) -> s
 
     # --- 3.3 ---
     lines += ["", "---", "", "## 3.3 Eta-domain validation", "",
-              "| Dataset | frac vertex in overlap | frac station-2 in overlap | frac low-eta | Status |",
-              "| --- | --- | --- | --- | --- |"]
+              "| Dataset | frac vertex in overlap | frac station-2 in overlap | frac low-eta | frac high-eta | Status |",
+              "| --- | --- | --- | --- | --- | --- |"]
     for r in results:
         c = r.checks.get("eta_domain", CheckResult(WARN))
         icon = _status_icon(c.status)
         st2 = _fmt_float(r.frac_st2_in_overlap)
         lines.append(
             f"| {r.name} | {r.frac_vertex_in_overlap:.4f} | {st2} "
-            f"| {r.frac_low_eta:.4f} | {icon} {c.status} |"
+            f"| {r.frac_low_eta:.4f} | {r.frac_high_eta:.4f} | {icon} {c.status} |"
         )
 
     # --- 3.4 ---
@@ -1298,6 +1351,7 @@ def render_json(results: list[DatasetResult]) -> dict:
                 "frac_vertex_in_overlap": r.frac_vertex_in_overlap,
                 "frac_st2_in_overlap": r.frac_st2_in_overlap,
                 "frac_low_eta": r.frac_low_eta,
+                "frac_high_eta": r.frac_high_eta,
                 "pt_stats": r.pt_stats,
                 "dxy_stats": r.dxy_stats,
                 "n_muplus": r.n_muplus,
@@ -1331,6 +1385,7 @@ def render_csv(results: list[DatasetResult]) -> list[dict]:
             "frac_expected_n_gen": f"{r.frac_expected:.4f}",
             "frac_vertex_in_overlap": f"{r.frac_vertex_in_overlap:.4f}",
             "frac_low_eta": f"{r.frac_low_eta:.4f}",
+            "frac_high_eta": f"{r.frac_high_eta:.4f}",
             "pt_median": _fmt_float(r.pt_stats.get("median", float("nan")), ".2f"),
             "dxy_median": _fmt_float(r.dxy_stats.get("median", float("nan")), ".2f"),
             "frac_mu_plus": f"{r.n_muplus / max(1, r.n_muplus+r.n_muminus):.3f}",
@@ -1357,11 +1412,11 @@ def render_csv(results: list[DatasetResult]) -> list[dict]:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Validate new GMT/OMTF overlap datasets (G1–G8)"
+        description="Validate new GMT/OMTF overlap datasets (G1–G10)"
     )
     p.add_argument("--data-dir", type=Path, default=Path("data/prod"))
     p.add_argument("--datasets", nargs="+",
-                   default=["G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8"])
+                   default=["G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "G10"])
     p.add_argument("--files-per-dataset", type=int, default=20,
                    help="Number of hits files per dataset (ignored if --all-files)")
     p.add_argument("--all-files", action="store_true",

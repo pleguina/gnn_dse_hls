@@ -40,6 +40,8 @@ DATASET_ALIASES: dict[str, list[str]] = {
     "G4": ["G4_pos", "G4_neg"],
     "G5": ["G5_pos", "G5_neg"],
     "G6": ["G6_pos", "G6_neg"],
+    "G9":  ["G9_pos",  "G9_neg"],
+    "G10": ["G10_pos", "G10_neg"],
 }
 
 

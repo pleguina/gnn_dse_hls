@@ -81,9 +81,9 @@ ALL_DATASETS = [
     "G4_pos", "G4_neg",
     "G5_pos", "G5_neg",
     "G6_pos", "G6_neg",
-    "G7", "G8", "B4",
+    "G7", "G8", "G9_pos", "G9_neg", "G10_pos", "G10_neg", "B4",
 ]
-HARD_NEG_DATASETS = {"G7", "G8"}
+HARD_NEG_DATASETS = {"G7", "G8", "G9", "G10"}
 
 SCHEMA_VERSION = 2
 SHARD_SIZE     = 5_000

@@ -113,13 +113,21 @@ def compute_loss(
         "pt_loss":   pt_loss.item(),
     }
 
-    # explicit hard-negative candidate loss: push all slots negative for G7/G8 windows
-    if w_hard_neg > 0.0 and "meta" in batch:
-        hard_neg_mask = torch.tensor(
-            [m["is_hard_neg"] for m in batch["meta"]],
-            dtype=torch.bool, device=node_logit.device,
-        )
-        if hard_neg_mask.any():
+    # explicit hard-negative candidate loss: push all slots negative for G7/G8/G9/G10 windows
+    if w_hard_neg > 0.0:
+        hard_neg_mask = None
+
+        if "meta_is_hard_neg" in batch:
+            hard_neg_mask = batch["meta_is_hard_neg"].to(
+                device=node_logit.device, dtype=torch.bool,
+            )
+        elif "meta" in batch:
+            hard_neg_mask = torch.tensor(
+                [int(m.get("is_hard_neg", 0)) for m in batch["meta"]],
+                dtype=torch.bool, device=node_logit.device,
+            )
+
+        if hard_neg_mask is not None and hard_neg_mask.any():
             hn_logits = out["candidate_logits"][hard_neg_mask]
             hn_loss = F.binary_cross_entropy_with_logits(
                 hn_logits,
@@ -513,27 +521,32 @@ def main() -> None:
 
         # train
         model.train()
-        tr_loss = 0.0
+        tr_loss    = 0.0
+        tr_hn_loss = 0.0
         for batch in train_loader:
             batch = {k: v.to(device, non_blocking=pin) if isinstance(v, torch.Tensor) else v
                      for k, v in batch.items()}
             with torch.cuda.amp.autocast(enabled=args.amp):
                 out  = model(batch["stubs"], batch["valid_mask"])
                 if args.model == "detr_model":
-                    loss, _ = detr_loss(out, batch, args.w_node, args.w_pt, args.w_no_obj)
+                    loss, bd = detr_loss(out, batch, args.w_node, args.w_pt, args.w_no_obj)
                 else:
-                    loss, _ = compute_loss(out, batch, args.w_node, args.w_cand, args.w_pt,
+                    loss, bd = compute_loss(out, batch, args.w_node, args.w_cand, args.w_pt,
                                        args.w_count, args.w_div, args.w_null, args.w_attn,
                                        args.w_hard_neg, args.unmatched_stub_weight,
                                        args.w_assign)
             opt.zero_grad()
             scaler.scale(loss).backward()
+            scaler.unscale_(opt)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(opt)
             scaler.update()
-            tr_loss += loss.item()
+            tr_loss    += loss.item()
+            tr_hn_loss += bd.get("hard_neg_loss", 0.0)
         if scheduler is not None:
             scheduler.step()
-        tr_loss /= max(1, len(train_loader))
+        tr_loss    /= max(1, len(train_loader))
+        tr_hn_loss /= max(1, len(train_loader))
 
         # validate
         model.eval()
@@ -564,9 +577,10 @@ def main() -> None:
             val_metrics[k] /= max(1, len(val_loader))
 
         elapsed = time.time() - t0
+        hn_str = f"  hn={tr_hn_loss:.4f}" if tr_hn_loss > 0.0 else ""
         print(
             f"[{epoch:3d}/{args.epochs}] "
-            f"tr={tr_loss:.4f}  val={val_loss:.4f}  "
+            f"tr={tr_loss:.4f}  val={val_loss:.4f}{hn_str}  "
             f"recall={val_metrics['stub_recall']:.3f}  "
             f"cand_rec={val_metrics['cand_recovery']:.3f}  "
             f"zero_fp={val_metrics['zero_win_fp']:.3f}  "

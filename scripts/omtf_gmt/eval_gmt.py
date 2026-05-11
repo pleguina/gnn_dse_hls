@@ -59,8 +59,11 @@ from omtf_gmt.models import build_deepsets, build_edge_compat, build_slot_model,
 
 
 ALL_DS        = ["S1", "S2", "S3", "S4", "S5", "B1", "B2", "B3", "B4"]
-ALL_G_DS      = ["G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "B4"]
-ZERO_CAND_DS  = {"B4", "G7", "G8"}   # datasets where zero overlap candidates are expected
+ALL_G_DS      = ["G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "G10", "B4"]
+ALL_DAS_DS    = ["single_muon_flatpt", "displaced_lowpt", "displaced_midpt",
+                 "dy_prompt", "llp_addon", "minbias"]
+ZERO_CAND_DS  = {"B4", "G7", "G8", "G9_pos", "G9_neg", "G10_pos", "G10_neg",
+                 "minbias"}   # datasets where zero overlap candidates are expected
 K_MAX = 3
 
 PT_BINS = [0, 2, 5, 10, 15, 20, 30, 50, 100, 9999]
