@@ -14,6 +14,7 @@ Trade-off:
 - Significant resource savings (hundreds of DSPs saved)
 """
 
+import json
 import os
 from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
@@ -25,6 +26,22 @@ BUILD_HLS_DIR = REPO_ROOT / "build" / "hls"
 PROJECT_DIR = BUILD_HLS_DIR / "graphsage_int8_po2"
 TEMPLATE_DIR = HLS_DIR / "tcl_example"
 
+# Load calibrated PO2 shift values from test vector config
+PO2_CONFIG_PATH = REPO_ROOT / "build" / "test_vectors_ptq_int8_po2" / "po2_config.json"
+shifts = {"BETA1_SHIFT": 17, "BETA2_SHIFT": 12, "EFF_SCALE1_SHIFT": 6, "EFF_SCALE2_SHIFT": 6}
+if PO2_CONFIG_PATH.exists():
+    with open(PO2_CONFIG_PATH) as f:
+        po2_cfg = json.load(f)
+    shifts.update(po2_cfg.get("shifts", {}))
+
+cflags = [
+    "-DM_BITS=24",
+    f"-DBETA1_SHIFT={shifts['BETA1_SHIFT']}",
+    f"-DBETA2_SHIFT={shifts['BETA2_SHIFT']}",
+    f"-DEFF_SCALE1_SHIFT={shifts['EFF_SCALE1_SHIFT']}",
+    f"-DEFF_SCALE2_SHIFT={shifts['EFF_SCALE2_SHIFT']}",
+]
+
 # Configuration for graphsage_int8_po2
 config = {
     "module_name": "graphsage_int8_po2",
@@ -33,25 +50,25 @@ config = {
     "clock_period": 2.77,
     "version": "1.0",
     "vendor": "GNN",
-    
+
     # Absolute paths to source files
     "src": [
         str(HLS_DIR / "graphsage_layer_int8_po2.cpp"),
         str(HLS_DIR / "graphsage_layer_int8_po2.h"),
     ],
-    
+
     # Absolute paths to testbench files
     "tb": [
         str(HLS_DIR / "testbench_int8_po2.cpp"),
     ],
-    
+
     # Absolute paths to include directories
     "includes": [
         str(HLS_DIR),
     ],
-    
-    # Additional compiler flags (M_BITS=24 for comparison with INT8)
-    "cflags": ["-DM_BITS=24"],
+
+    # Shift values read from po2_config.json (calibrated per model)
+    "cflags": cflags,
     
     # Absolute paths
     "project_dir": str(PROJECT_DIR),
