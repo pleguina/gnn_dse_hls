@@ -1,0 +1,584 @@
+\documentclass{IEEEtran}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{url}
+\usepackage{textcomp,nicefrac}
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+\markboth{IEEE TRANSACTIONS ON NUCLEAR SCIENCE, VOL. XX, NO. XX, XXXX
+2025}
+{A. Cardini \MakeLowercase{\textit{et al.}}: Design-Space Exploration and Integer Quantization of Graph Neural Networks for Real-Time FPGA Track Finding}
+\begin{document}
+\title{Design-Space Exploration and Integer Quantization of Graph Neural Networks for Real-Time FPGA Track Finding}
+\author{Andrea Cardini, Elena Aller Gutierrez, Santiago Folgueras, and Pelayo Leguina \newline Universidad de Oviedo, Spain
+\thanks{Submitted on:
+\\
+This work and the authors are fully supported by ERC StG--101115353: INTREPID, granted to Prof. Santiago Folguersas. Funded by the European Union.
+}}
+
+\maketitle
+
+\begin{abstract}
+Real-time track finding for displaced-muon signatures in the CMS Level-1 trigger must operate under strict fixed-latency constraints (12.5 s) while processing high-throughput detector data. Graph neural networks (GNNs) provide a natural representation of sparse, irregular detector geometries; however, mapping message-passing models to FPGAs requires careful co-optimization of numerical formats, architectural parameters, and high-level synthesis (HLS) microarchitecture.
+
+We present an end-to-end workflow bridging GNN training and FPGA prototyping for a GraphSAGE-based model targeting real-time inference. The pipeline integrates: (i) automated design-space exploration across model dimensions, fixed-point precision, and HLS parameters to expose accuracy--latency--resource trade-offs; (ii) an integer-only INT8 implementation with data-driven bit-width optimization, reducing accumulator and scaling widths while preserving numerical correctness; and (iii) modular C++ kernels synthesized with Vitis HLS and validated through bit-exact C-simulation against Python integer references.
+
+Preliminary validation on the Cora benchmark demonstrates that post-training quantization preserves model accuracy within 0.1\% of the floating-point baseline, while enabling substantial reductions in memory footprint and arithmetic complexity. Bit-exact agreement between software and hardware models is achieved using optimized fixed-point scaling. Quantization-aware training and physics-driven datasets for displaced-muon reconstruction are currently under development.
+
+This work establishes a reproducible methodology for deploying message-passing GNNs on FPGAs under strict real-time constraints, providing a concrete path toward fixed-latency GNN-based track reconstruction in the CMS trigger system.
+\end{abstract}
+
+\begin{IEEEkeywords}
+FPGA, GNN, LHC, Quantization, Real-time, Trigger
+\end{IEEEkeywords}
+
+\section{Introduction}
+\label{sec:introduction}
+The High-Luminosity phase of the Large Hadron Collider (HL-LHC) at CERN is scheduled to start in 2030, with improved beam squeezing and focusing techniques to increase the collision rate at the interaction points. At the CMS experiment, the number of proton-proton collisions per bunch crossing is expected to increase from 60 to 140--200 every 25 ns. To select potentially interesting events while contending with the increased collision rate, the hardware-level (also known as Level-1 or L1) trigger system is undergoing its Phase-2 upgrade~\cite{CERN-LHCC-2020-004}; most notably for the presented work, new on-board electronics with faster readout will allow the deployment of more complex reconstruction and tracking algorithms.
+
+The INTREPID (INnovative TRiggEr techniques for beyond the standard model PhysIcs Discovery at the LHC) project, funded by the European Research Council, explores new trigger technologies to search for unconventional signatures in the detector, which could be a probe into new physics beyond the standard model.
+A possible unconventional signature could be a muon track originating displaced from the primary interaction vertex as a result of the decay of a Long-Lived Particle (LLP). Such unconventional signatures might be lost due to the high event rate at the HL-LHC and not be recorded for offline analysis. Our goal is the deployment of a dedicated track-finding algorithm, entirely contained within the FPGA device that will be installed in the CMS L1 trigger system.
+Combining detector hits to reconstruct the trajectory of a muon naturally maps onto a graph, with the detector hits serving as nodes and their geometric proximity as edges. Therefore, a Graph Neural Network was chosen as the architecture for the displaced muon reconstruction algorithm.
+For a successful deployment, the GNN is required to operate within a 12.5 $\mu$s latency budget and fit within the FPGA specifics. This manuscript presents our first systematic study of the latency and resource usage for a GNN within a firmware-proxy dataset to make this deployment feasible, focusing on the weight quantization.
+
+\section{Firmware requirements for the Phase-2 L1 trigger}
+At the HL-LHC, the CMS L1 trigger system is expected to reduce the event rate of 140--200 every 25 ns to a value of 750 kHz, which can then be processed by the High Level Trigger on a longer timescale. The buffer time for decision-taking at L1 is 12.5 $\mu$s, corresponding to the storage capacity for the detector data before either deletion or transfer to the CPU farm for further analysis.
+
+This work focuses on the deployment of a track-finding algorithm in the muon system, and in particular in the overlap region between the barrel and endcap. This region, extending in pseudorapidity between 0.8 and 1.24, is characterized by the presence of three distinct detector technologies: Drift-Tubes (DTs), Cathode Strip Chambers (CSCs), and Resistive Plate Chambers (RPCs). In the present, muon tracks in this region are reconstructed by the Overlap Muon Track Finding (OMTF) algorithm, combining the different information provided by the different detectors, such as the position, bending direction, and time of arrival for a track segment. For the Phase-2 upgrade, the OMTF will run on a custom ATCA board housing a Xilinx Virtex UltraScale FPGA with 25 Gb/s optical transceivers. The study presented in this manuscript targets an XCVU13P FPGA, from the Xilinx Virtex UltraScale+ production line, which provides 12,288 Digital Signal Processing (DSP) slices, 1,728,000 Look-Up-Tables (LUTs), 3,456,000 Flip-Flops (FFs), 360 Mb of on-chip UltraRAM memory, and 128 GTY transceivers capable of operating at 32.75 Gb/s. The device is a more advanced model of the XCVU9P FPGA quoted in Ref.~\cite{CERN-LHCC-2020-004} as the design choice for the OMTF, which instead provides 6,840 DSP slices, 1,182,000 LUTs, and 2,364,000 FFs.
+
+
+
+\section{Graph network architecture}
+
+Before deploying a fully optimized GNN onto an FPGA, tests are required to estimate the maximum allowed complexity as a function of the available resources. Initial studies~\cite{Leguina:2025suh,Cardini:2025IML} hinted towards a GNN with sample aggregation (GraphSAGE) or message passing (MPNN) having good performance for the case studied. Figure~\ref{fig:SAGEGNN} shows a schematic representation of the simplified network that was constructed to perform firmware deployment studies: a two-layer GraphSAGE GNN with mean aggregation, feature projection, HLS-friendly fixed loop bounds, and a simplified root-feature handling. 
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.7\linewidth]{figs/SAGEGNN.png}
+    \caption{Schematic representation of the tested network.}
+    \label{fig:SAGEGNN}
+\end{figure}
+
+Figure~\ref{fig:SAGEsimple} shows a diagram representation of a GraphSAGE layer, where each node is embedded with the sampling and aggregation of its local neighbors.
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.95\linewidth]{figs/SAGEsimplified.png}
+    \caption{Schematic representation of one GraphSAGE layer.}
+    \label{fig:SAGEsimple}
+\end{figure}
+
+Input data for the GNN is represented as graphs, with the coordinates of detector hits (radius, $r$, pseudorapidity, $\eta$, and azimuthal angle, $\varphi$) assigned to a node, together with the bending angle for the track segment if the hit was recorded by a DT. Edges are then constructed as the distance in $\eta{-}\varphi$ between detectors that are geometrically compatible, i.e., positioned in a way where a particle could theoretically cross both detectors.
+A graphical representation of hits considered geometrically compatible, and thus forming a graph, is presented in Fig.~\ref{fig:examplegraph}. 
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.95\linewidth]{figs/cms_gnn_py_2_opt.png}
+    \caption{Schematic representation of the muon system of the CMS detector at the LHC being traversed by a long-lived particle decaying to a pair of muons. The red lines represent a pair of muons originating from a displaced vertex, while the yellow circles represent nodes that have been activated and form a graph for the track-finding GNN.}
+    \label{fig:examplegraph}
+\end{figure}
+
+
+
+\section{Dataset and data preparation}
+\label{sec:dataset}
+
+The Cora citation network~\cite{Hamilton:2017inductive} is used in this work as a firmware-proxy benchmark to develop and validate the quantization and FPGA deployment methodology. Cora consists of 2,708 scientific publications as nodes and 10,556 directed citation edges, with an average node degree of approximately 3.9. Each node is represented by a 1,433-dimensional binary bag-of-words feature vector and is labelled with one of seven research-topic classes. The standard Planetoid data splits~\cite{Yang:2016wmc} are adopted: 20 nodes per class (140 total) for training, 500 nodes for validation, and 1,000 nodes for testing. Prior to training, node features are row-normalised so that each feature vector sums to unity.
+
+The full 2,708-node graph cannot be processed under fixed-latency FPGA constraints. A compact fixed-size subgraph is therefore extracted for hardware-level validation: a 2-hop neighbourhood around a representative training node is computed and truncated to $N$ nodes, with $N$ swept as an architectural parameter during design-space exploration. The adjacency matrix of the extracted subgraph is row-normalised without self-loops,
+\begin{equation}
+    \tilde{A}_{ij} = \frac{1}{\deg(i)},\quad (i,j)\in\mathcal{E},
+    \label{eq:adj_norm}
+\end{equation}
+consistent with the SAGEConv mean-aggregation specification.
+
+The 1,433-dimensional Cora features would require approximately $1433\times F_h$ MAC operations per node per layer, prohibitive for fixed-latency inference. A trainable linear projection layer reduces the input dimension to $F_{\mathrm{proj}}=16$ before the first graph convolution. The FPGA-targeted model therefore operates with architecture $16{\to}24{\to}7$ (projected input $\to$ hidden $\to$ classes), yielding a total parameter count of ${\sim}1.1\mathrm{k}$ weights suitable for complete array unrolling in HLS.
+
+
+\section{Quantization methods}
+\label{sec:methods}
+
+Deploying floating-point GNNs on FPGAs is resource-prohibitive: a 32-bit implementation of the $16{\to}24{\to}7$ model exceeds all XCVU13P DSP, LUT, and FF budgets by up to 183\% (Table~\ref{tab:quantization}). A sequence of progressively optimised quantization schemes is developed, each trading a bounded accuracy loss for substantial reductions in latency and resource usage.
+
+\subsection{Float32 and Fixed-Point Baselines}
+
+A floating-point reference is obtained by converting the trained 64-bit PyTorch model to 32-bit and synthesising it with Vitis HLS using native \texttt{float} types. As shown in Table~\ref{tab:quantization}, the resource requirements are prohibitive (DSP: 283\%, LUT: 123\%), establishing the need for reduced-precision arithmetic.
+
+A first quantized variant (\textit{Fixed-PTQ}) uses Xilinx \texttt{ap\_fixed<8,8>} arithmetic for both activations and weights, retaining floating-point scale factors during dequantization. This reduces latency to 77 cycles and brings resource usage within device bounds (DSP: 56\%), but floating-point scale multiplications still contribute residual DSP overhead.
+
+\subsection{Integer-Only Post-Training Quantization}
+\label{sec:int8ptq}
+
+A fully integer arithmetic pipeline is achieved by replacing all floating-point operations with integer MAC and fixed-point rescaling. The trained float model is calibrated on a representative subgraph to derive per-tensor symmetric quantization scales:
+\begin{equation}
+    s = \frac{\max|x|}{127},\quad
+    q = \mathrm{clip}\!\left(\!\left\lfloor\frac{x}{s}\right\rceil,-128,\,127\right),
+    \label{eq:int8_quant}
+\end{equation}
+yielding INT8 weight matrices and INT8 activations. The row-normalised adjacency matrix is scaled to fixed-point integers as
+\begin{equation}
+    A^K_{ij} = \left\lfloor \tilde{A}_{ij}\cdot K \right\rceil,\quad K = 2^{K_b},\quad K_b = 12,
+    \label{eq:adj_int}
+\end{equation}
+enabling fully integer aggregation. Biases are converted to the accumulator domain:
+\begin{equation}
+    b^{\mathrm{int}}_o = \left\lfloor \frac{b_o}{s_{\mathrm{in}}\cdot s_w} \right\rceil,
+    \label{eq:bias_int}
+\end{equation}
+where $s_{\mathrm{in}}$ and $s_w$ are the input-activation and weight scales. The complete integer forward pass for layer $l$ of the deployed GraphSAGE model is:
+\begin{align}
+    T_{i,f}^{(l)} &= \sum_{j} A^K_{ij}\cdot h_{j,f}^{(l-1)}, \label{eq:int_agg}\\
+    \hat{h}_{i,f}^{(l)} &= \left\lfloor \frac{T_{i,f}^{(l)}\cdot\beta^{(l)}_{\mathrm{fp}} + 2^{M-1}}{2^M} \right\rfloor, \label{eq:int_rescale_agg}\\
+    a_{n,o}^{(l)} &= b_o^{(l)} + \sum_{f} \hat{h}_{n,f}^{(l)}\cdot w^{(l)}_{o,f}, \label{eq:int_lin}\\
+    h_{n,o}^{(l)} &= \left\lfloor \frac{a_{n,o}^{(l)}\cdot\gamma^{(l)}_{\mathrm{fp}} + 2^{M-1}}{2^M} \right\rfloor, \label{eq:int_rescale_lin}
+\end{align}
+where $M=24$ fractional bits are used for the scale multipliers:
+\begin{align}
+    \beta^{(l)}_{\mathrm{fp}} &= \left\lfloor \frac{s^{(l)}_{\mathrm{in}}}{K\cdot s^{(l)}_{\mathrm{hid}}} \cdot 2^M \right\rceil, \label{eq:beta_fp}\\
+    \gamma^{(l)}_{\mathrm{fp}} &= \left\lfloor \frac{s^{(l)}_{\mathrm{in}}\cdot s^{(l)}_w}{s^{(l)}_{\mathrm{out}}} \cdot 2^M \right\rceil. \label{eq:gamma_fp}
+\end{align}
+Equations~\eqref{eq:int_rescale_agg} and \eqref{eq:int_rescale_lin} each require one wide-integer multiplication ($a \times \text{scale\_fp}$), mapping to DSP48 slices in the synthesised design.
+
+\subsection{INT8 with Power-of-Two Scaling}
+\label{sec:po2}
+
+The four scale multiplications in \eqref{eq:int_rescale_agg}--\eqref{eq:int_rescale_lin} consume a significant fraction of the available DSP budget. Constraining scales to the nearest power of two eliminates all four multiplications, replacing them with compile-time arithmetic right-shifts:
+\begin{equation}
+    \beta \;\approx\; \tilde{\beta} = 2^{-S_\beta},\quad
+    S_\beta = \left\lceil -\log_2\beta \right\rceil.
+    \label{eq:po2_approx}
+\end{equation}
+The approximation introduces a multiplicative error bounded by a factor of at most 2. Under this constraint, \eqref{eq:int_rescale_agg} and \eqref{eq:int_rescale_lin} reduce to shift-and-round operations:
+\begin{align}
+    \hat{h}_{i,f}^{(l)} &= \bigl(T_{i,f}^{(l)} + 2^{S_{\beta}^{(l)}-1}\bigr) \gg S_{\beta}^{(l)}, \label{eq:po2_agg}\\
+    h_{n,o}^{(l)} &= \bigl(a_{n,o}^{(l)} + 2^{S_{\gamma}^{(l)}-1}\bigr) \gg S_{\gamma}^{(l)}, \label{eq:po2_lin}
+\end{align}
+where the $+2^{S-1}$ term implements round-to-nearest and $\gg$ denotes an arithmetic right-shift. No multipliers are needed for rescaling.
+
+For the two-layer $16{\to}24{\to}7$ model, the four shift amounts are derived analytically from the PTQ calibration scales:
+\begin{align}
+    S_{\beta_1} &= \left\lceil-\log_2\!\left(\tfrac{s_{\mathrm{in}}}{K\cdot s_{\mathrm{hid}}}\right)\right\rceil, \label{eq:shift_beta1}\\
+    S_{\beta_2} &= \left\lceil-\log_2\!\left(\tfrac{1}{K}\right)\right\rceil = K_b = 12\quad(\text{exact}), \label{eq:shift_beta2}\\
+    S_{\gamma_1} &= \left\lceil-\log_2 s_{w_1}\right\rceil, \label{eq:shift_gamma1}\\
+    S_{\gamma_2} &= \left\lceil-\log_2\!\left(\tfrac{s_{\mathrm{hid}}\cdot s_{w_2}}{s_{\mathrm{out}}}\right)\right\rceil. \label{eq:shift_gamma2}
+\end{align}
+Notably, $S_{\beta_2}=K_b=12$ is exact because $\beta_2 = s_{\mathrm{hid}}/(K\cdot s_{\mathrm{hid}}) = 1/K = 2^{-12}$ is already a power of two. For the reference model, the four shift constants are $S_{\beta_1}=17$, $S_{\beta_2}=12$, $S_{\gamma_1}=7$, $S_{\gamma_2}=8$.
+
+\begin{figure}[htbp]
+    \centering
+    % [PLACEHOLDER: INT8-PO2 pipeline block diagram]
+    % Suggested content: four boxes connected by arrows:
+    %   (1) Float model (train) ->
+    %   (2) PTQ calibration (derive s_in, s_hid, s_out, s_w) ->
+    %   (3) PO2 approximation (compute shift constants S_beta, S_gamma) ->
+    %   (4) HLS kernel (integer MACs + arithmetic right-shifts, no multipliers)
+    % Below the pipeline: Python integer emulator used for bit-exact validation.
+    \fbox{\parbox{0.90\linewidth}{\centering\vspace{5pt}
+        \small
+        Float model
+        $\xrightarrow{\;\text{PTQ calib.}\;}$
+        INT8 weights\\[3pt]
+        $\xrightarrow{\;\text{PO2 approx.}\;}$
+        Shift constants ($S_\beta,\,S_\gamma$)
+        $\xrightarrow{\;\text{HLS}\;}$
+        Bit-exact output
+        \vspace{5pt}}}
+    \caption{INT8-PO2 quantization and deployment pipeline. PTQ calibration on a representative subgraph yields per-tensor scales, which are rounded to the nearest power of two. The resulting shift constants are embedded as compile-time macros in the Vitis HLS kernel, replacing all four rescaling multiplications with wiring-only right-shifts. Bit-exact agreement between the Python integer emulator and the HLS C-simulation is verified before synthesis.}
+    \label{fig:po2_pipeline}
+\end{figure}
+
+In the synthesised Vitis HLS kernel, shift amounts are encoded as preprocessor macros (\texttt{BETA1\_SHIFT}, \texttt{BETA2\_SHIFT}, \texttt{EFF\_SCALE1\_SHIFT}, \texttt{EFF\_SCALE2\_SHIFT}), allowing the tool to resolve them to pure wiring during elaboration.
+
+\subsection{Data-Driven Bit-Width Optimization}
+\label{sec:bwopt}
+
+A 32-bit accumulator is sufficient to prevent overflow in any INT8 MAC chain but wastes routing and flip-flop resources. A data-driven profiling pass runs an integer emulation of the full forward pass and records the maximum absolute value of each intermediate signal: accumulator $m_{a}$, aggregation temporary $m_T$, and adjacency entry $m_A$. The minimal sufficient bit-width for a signed integer type is then:
+\begin{equation}
+    B = \left\lceil\log_2(m+1)\right\rceil + 1 + \delta,
+    \label{eq:bwidth}
+\end{equation}
+where $\delta=2$ is a safety margin and the extra $+1$ accounts for the sign bit. Theoretical worst-case bounds,
+\begin{equation}
+    m_T^{\mathrm{th}} = d_{\max}\cdot A^K_{\max}\cdot 127,\quad
+    m_a^{\mathrm{th}} = \max\!\bigl(m_b,\; F\cdot 127\cdot w_{\max}\bigr),
+    \label{eq:bwidth_theory}
+\end{equation}
+are computed in parallel and used as a sanity check; data-driven widths are chosen whenever they are narrower.
+
+\begin{figure}[htbp]
+    \centering
+    % [PLACEHOLDER: Bit-width comparison bar chart]
+    % Suggested content: grouped horizontal bars for ADJ_BITS, ACC_BITS, SCALE_BITS, MULT_BITS
+    %   showing: (i) conservative default, (ii) theoretical worst-case, (iii) data-driven
+    %   with numeric labels showing bit savings.
+    \fbox{\parbox{0.90\linewidth}{\centering\vspace{5pt}
+        \small
+        [PLACEHOLDER: Bit-width analysis comparison]\\[3pt]
+        Conservative default vs.\ theoretical worst-case\\
+        vs.\ data-driven, for each intermediate signal type
+        \vspace{5pt}}}
+    \caption{Comparison of conservative default, theoretical worst-case, and data-driven bit-widths for the INT8-PO2 HLS kernel intermediate signals. Data-driven profiling narrows the accumulator from 32 to 22 bits and the adjacency type from 16 to 14 bits, reducing flip-flop and LUT usage without affecting inference correctness.}
+    \label{fig:bitwidth_analysis}
+\end{figure}
+
+Applied together with PO2 shift optimization, data-driven bit-width narrowing yields the \textit{INT8-PO2 Opt.}\ configuration (Table~\ref{tab:quantization}): 19 cycles latency ($3\times$ lower than base INT8-PO2), 20\% DSP usage, 6\% FF usage, and 27\% LUT usage, making it the best overall design selected for deployment.
+
+\subsection{Quantization-Aware Training}
+\label{sec:qat}
+
+QAT inserts differentiable fake-quantize operators around weight and activation tensors during the forward pass, allowing the model to adapt its parameters to the quantization grid under gradient descent. The Brevitas library provides symmetric per-tensor INT8 fake quantizers with straight-through estimators and moving-average min/max observers. The QAT model initialises from the pre-trained float weights and fine-tunes for 200 epochs with quantization applied at INT8 precision to both weights and activations.
+
+The \textit{QAT-v2} entry in Table~\ref{tab:quantization} recovers 1.8 percentage points of accuracy relative to the PTQ baseline (76.8\% vs.\ 75.0\%) at the cost of higher latency (55 cycles) and resource usage (DSP: 55\%, LUT: 16\%), because the learned quantization grids are finer than the PTQ calibration scales.
+
+
+\section{Weight quantization}
+\label{sec:results}
+
+The GraphSAGE GNN was tested using a custom implementation for graph networks derived from the hls4ml package. Tests were performed on the Cora dataset described in Section~\ref{sec:dataset}, using the quantization methods defined in Section~\ref{sec:methods}.
+
+The GraphSAGE was retrained with different weight quantization to compare the resources used in a firmware proxy. The metrics compared are:
+\begin{itemize}
+    \item the accuracy, estimated as the fraction of correctly classified nodes in the 1,000-node Cora test set;
+    \item the latency, both in nanoseconds and as a number of cycles based on the FPGA clock (${\sim}0.36$ MHz);
+    \item resources needed to deploy the model on an FPGA: DSP slices, flip-flops, and look-up tables;
+    \item the processing frequency, obtained for an initiation interval of 1, i.e., with a new graph being taken as input at each cycle.
+\end{itemize}
+
+Table~\ref{tab:quantization} lists the result of the weight quantization techniques tested. Each column shows a different integer quantization attempted. The first one, labeled Float32, was the first attempt at deploying the 2-layer graphSAGE GNN onto an FPGA proxy after converting the 64b weights to 32b ones. As shown by the DSP slices, LUTs, and FFs, all reporting values greater than what is available on a XCVU13P FPGA, the model could not be deployed.
+
+\begin{table}[htbp]
+\centering
+\caption{Integer quantization study}
+\label{tab:quantization}
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{p{35pt} p{28pt}p{40pt}p{38pt}p{30pt}p{40pt}}
+\hline
+\textbf{Metric} & \textbf{Float32} & \textbf{Fixed-PTQ} & \textbf{INT8-PO2} & \textbf{QAT-v2} & \textbf{INT8-PO2  Opt.$^\star$} \\
+\hline
+Precision         & FP32  & Fixed(8|8) & INT8  & INT8  & INT8  \\
+Accuracy \par(\%)     & 78.0  & 75.7  & 75.0  & 76.8  & 75.0  \\
+Latency \par(cycles)  & 603   & 77    & 28    & 55    & 19    \\
+Latency \par(ns)      & 1670  & 213   & 77.6  & 152.3 & 52.6  \\
+Frequency (MHz)   & ---   & 397   & 450   & 493   & 502   \\
+DSP\par slices        & 34,880 \par(283\%)$^\dagger$ & 6,976 \par(56\%) & 5,320 \par(43\%) & 6,760 \par(55\%) & 2,560 (20\%) \\
+FFs        & 4.45M \par(128\%)$^\dagger$  & 262k \par(7\%)   & 254k \par(7\%)   & 561k \par(16\%)  & 232k (6\%)   \\
+LUTs              & 2.14M \par(123\%)$^\dagger$  & 110k \par(6\%)   & 188k \par(10\%)  & 282k \par(16\%)  & 477k (27\%)  \\
+\hline
+\multicolumn{6}{p{240pt}}{Comparison of different weight quantization techniques across different metrics. Percentages are calculated with respect to the characteristics of an XCVU13P FPGA.}\\
+\multicolumn{6}{p{240pt}}{$^\dagger$Values exceeding 100\% indicate that the resources required exceed what is available on a single device.}\\
+\multicolumn{6}{p{240pt}}{$^\star$Best overall design; selected for deployment.}\\
+\end{tabular}
+\end{table}
+
+\section{Conclusions}
+
+\appendices
+
+\section*{Appendix}
+
+Appendixes, if needed, appear before the acknowledgment. They do not have
+Roman numeral section numbers. Use
+the \verb|\appendices| command for multiple appendices and
+\verb|\appendix| for a single appendix. Do not use \verb|\section|
+inside a single Appendix.
+
+If you prefer to number equations separately in each Appendix, please
+use \verb|\numberwithin{equation}{section}| instead of redefining
+equation macros or resetting the equation counter.
+
+\section*{Acknowledgment}
+
+Acknowledgments, if any, appear after any appendices and before the list of
+references. The preferred spelling of the word ``acknowledgment'' in US
+English is without an ``e'' after the ``g.'' Use the singular heading even
+if you have many acknowledgments. Avoid expressions such as ``One of us
+(S.B.A.) would like to thank \textellipsis~.'' Instead, write ``F. A. Author thanks
+\textellipsis~.'' In most cases, sponsor and financial support acknowledgments are
+placed in the unnumbered footnote on the first page, not here.
+
+\section*{References and Footnotes}
+
+\subsection{References}
+References need not be cited in text. When they are, they appear on the
+line, in square brackets, inside the punctuation. Multiple references are
+each numbered with separate brackets. When citing a section in a book,
+please give the relevant page numbers. In text, refer simply to the
+reference number. Do not use ``Ref.'' or ``reference'' except at the
+beginning of a sentence: ``Reference \cite{b3} shows \textellipsis~.''
+
+Please us the standard reference format in which
+reference numbers are set flush left and form a column of their own, hanging
+out beyond the body of the reference. The reference numbers are on the line,
+enclosed in square brackets. In all references, the given name of the author
+or editor is abbreviated to the initial only and precedes the last name. Use
+them all; use \emph{et al.} only if names are not given. Use commas around Jr.,
+Sr., and III in names. Abbreviate conference titles. When citing IEEE
+transactions, provide the issue number, page range, volume number, year,
+and/or month if available. When referencing a patent, provide the day and
+the month of issue, or application. References may not include all
+information; please obtain and include relevant information. Do not combine
+references. There must be only one reference with each number. If there is a
+URL included with the print reference, it can be included at the end of the
+reference.
+
+Other than books, capitalize only the first word in a paper title, except
+for proper nouns and element symbols. For papers published in translation
+journals, please give the English citation first, followed by the original
+foreign-language citation See the end of this document for formats and
+examples of common references. For a complete discussion of references and
+their formats, see the IEEE style manual at
+\underline{http://www.ieee.org/authortools}.
+
+\subsection{Footnotes}
+Other than the unnumbered affiliations footnote on page 1 of your paper, do
+not use footnotes in your paper. Information that might go in a footnote can
+become a parenthetical phrase or sentence or just be incorporated into the
+text.
+
+\bibliographystyle{cms_unsrt}
+\bibliography{biblio.bib}
+
+
+\def\refname{\vadjust{\vspace*{-1em}}} %Please don't do this in a real paper.
+
+\subsection*{Basic format for books:}
+
+\begin{thebibliography}{00}
+\bibitem{b1} J. K. Author, ``Title of chapter in the book,'' in \textit{Title of His Published Book, x}th ed. City of Publisher,
+(only U.S. State), Country: Abbrev. of Publisher, year, ch. x, sec. x, pp.
+\textit{xxx--xxx.}
+\end{thebibliography}
+
+\subsection*{Examples:}
+
+\begin{thebibliography}{00}
+\bibitem{b2} G. O. Young, ``Synthetic structure of industrial
+plastics,'' in \emph{Plastics}, 2nd ed., vol. 3, J. Peters, Ed. New York, NY, USA: McGraw-Hill, 1964, pp. 15--64.
+\bibitem{b3} W.-K. Chen, \emph{Linear Networks and Systems}. Belmont, CA, USA: Wadsworth, 1993, pp. 123--135.
+\end{thebibliography}
+
+\subsection*{Basic format for periodicals:}
+
+\begin{thebibliography}{00}
+\bibitem{b4} J. K. Author, ``Name of paper,'' \textit{Abbrev. Title of Periodical}, vol. x, no. x, pp. xxx-xxx, Abbrev. Month, year, DOI.
+10.1109.\textit{XXX}.123456.
+\end{thebibliography}
+
+\subsection*{Examples:}
+
+\begin{thebibliography}{00}
+\bibitem{b5} J. U. Duncombe, ``Infrared navigation---Part I: An
+assessment of feasibility,'' \emph{IEEE Trans. Electron Devices}, vol. ED-11, no. 1, pp. 34--39, Jan. 1959, 10.1109/TED.2016.2628402.
+\bibitem{b6} E. P. Wigner, ``Theory of traveling-wave optical laser,'' 
+\emph{Phys. Rev.}, vol. 134, pp. A635--A646, Dec. 1965.
+\bibitem{b7} E. H. Miller, ``A note on reflector arrays,'' \emph{IEEE
+Trans. Antennas Propagat.}, to be published.
+\bibitem{b8} H. Qin, Y. Cui, Z. Wu, Q. Chen and D. Xing, "Real-Time
+Thermoacoustic Imaging-Guidance for Breast Tumor Resection," \emph{IEEE Photonics Journal}, vol. 12, no. 3, pp. 1--7, June 2020, Art no. 3700207.
+\end{thebibliography}
+
+\subsection*{Basic format for reports:}
+
+\begin{thebibliography}{00}
+\bibitem{b9} J. K. Author, ``Title of report,'' Abbrev. Name of Co., City of Co., Abbrev.
+State, Country, Rep. {xxx}, year.
+\end{thebibliography}
+
+\subsection*{Examples:}
+
+\begin{thebibliography}{00}
+\bibitem{b10} E. E. Reber, R. L. Michell, and C. J. Carter, ``Oxygen absorption in the earth's atmosphere,'' Aerospace Corp., Los Angeles, CA, USA, Tech. Rep. TR-0200 (4230-46)-3, Nov. 1988.
+\bibitem{b11} J. H. Davis and J. R. Cogdell, ``Calibration program for the 16-foot antenna,'' Elect. Eng. Res. Lab., Univ. Texas, Austin, TX, USA, Tech. Memo. NGL-006-69-3, Nov. 15, 1987.
+\end{thebibliography}
+
+\subsection*{Basic format for handbooks:}
+
+\begin{thebibliography}{00}
+\bibitem{b12} \textit{Name of Manual/Handbook}, x ed., Abbrev. Name of Co., City of Co., Abbrev. State, Country, year, pp.
+\textit{xxx-xxx.}
+\end{thebibliography}
+
+\subsection*{Examples:}
+
+\begin{thebibliography}{00}
+\bibitem{b13} \textit{Transmission Systems for Communications}, 3rd ed., Western Electric Co., Winston-Salem, NC, USA, 1985, pp. 44--60.
+\bibitem{b14} \textit{Motorola Semiconductor Data Manual}, Motorola Semiconductor Products Inc., Phoenix, AZ, USA, 1989.
+\end{thebibliography}
+
+\subsection*{Basic format for books (when available online): }
+
+\begin{thebibliography}{00}
+\bibitem{b15} J. K. Author, ``Title of chapter in the book,'' in \textit{Title of Published Book}, xth ed. City of
+Publisher, State, Country: Abbrev. of Publisher, year, ch. x, sec. x, pp.
+\textit{xxx--xxx}. [Online]. Available: \underline {http://www.web.com}. Accessed on: Month
+Day, Year.
+\end{thebibliography}
+
+\subsection*{Examples:}
+
+\begin{thebibliography}{00}
+\bibitem{b16} G. O. Young, ``Synthetic structure of industrial
+plastics,'' in \emph{Plastics}, vol. 3, Polymers of Hexadromicon, J.
+Peters, Ed., 2nd ed. New York, NY, USA: McGraw-Hill, 1964, pp. 15--64.
+[Online]. Available: \underline{http://www.bookref.com}. Accessed on: April 25, 2020.
+\bibitem{b17} \textit{The Founders' Constitution}, Philip B. Kurland and Ralph Lerner, eds., Chicago, IL, USA: Univ. Chicago Press, 1987. [Online]. Available: \underline {http://press-pubs.uchicago.edu/founders/}. Accessed on: April 25, 2020.
+\bibitem{b18} \emph{The Terahertz Wave eBook}. ZOmega Terahertz
+Corp., 2014. [Online]. Available: \underline{http://dl.z-thz.com/eBook/zomega\_ebook\_pdf\_1206\_sr.pdf}. Accessed on: May 19, 2014.
+\bibitem{b19} Philip B. Kurland and Ralph Lerner, eds., \textit{The
+Founders' Constitution. }Chicago, IL, USA: Univ. of Chicago Press, 1987, [Online] Available: \emph{http://press-pubs.uchicago.edu/founders/}. Accessed on: Feb. 28, 2010.
+\end{thebibliography}
+
+\subsection*{Basic format for conference proceedings (published):}
+
+\begin{thebibliography}{00}
+\bibitem{b20} J. K. Author, ``Title of paper,'' in \textit{Abbreviated Name of Conf.}, City of Conf., Abbrev. State (if
+given), Country, year, pp. \textit{xxxxxx.}
+\end{thebibliography}
+
+\subsection*{Example:}
+
+\begin{thebibliography}{00}
+\bibitem{b21} D. B. Payne and J. R. Stern, ``Wavelength-switched
+passively coupled single-mode optical network,'' in \textit{Proc. IOOC-ECOC, }Boston, MA, USA, 1985,~pp.~585--590.
+\end{thebibliography}
+
+\subsection*{Basic format for papers presented at conferences when available online: }
+
+\begin{thebibliography}{00}
+\bibitem{b22} J.K. Author. (year, month). Title. presented at abbrev. conference title.
+[Type of Medium]. Available: \underline{site/path/file}. Accessed on: Month Day, Year.
+\end{thebibliography}
+
+\subsection*{Example:}
+
+\begin{thebibliography}{00}
+\bibitem{b23} PROCESS Corporation, Boston, MA, USA. Intranets: Internet technologies deployed behind the firewall for corporate productivity. Presented at INET96 Annual Meeting. [Online]. Available: \underline {http://home.process.com/Intranets/wp2.htp}. Accessed on: April 25, 2020.
+\end{thebibliography}
+
+\subsection*{Basic format for reports and handbooks (when available online): }
+
+\begin{thebibliography}{00}
+\bibitem{b24} J. K. Author. ``Title of report,'' Company. City, State, Country. Rep. no.,
+(optional: vol./issue), Date. [Online] Available:
+\underline{site/path/file}. Accessed
+on: Month Day, Year.
+\end{thebibliography}
+
+\subsection*{Examples:}
+
+\begin{thebibliography}{00}
+\bibitem{b25} R. J. Hijmans and J. van Etten, ``Raster: Geographic analysis and modeling with raster data,'' R Package Version 2.0-12, Jan. 12, 2012. [Online]. Available: \underline {http://CRAN.R-project.org/package=raster}. Accessed on: April 25, 2020.
+\bibitem{b26} Teralyzer. Lytera UG, Kirchhain, Germany [Online]. Available: \emph{http://www.lytera.de/Terahertz\_THz\_Spectroscopy.php?id=home}, Accessed on: Jun. 5, 2014
+\end{thebibliography}
+
+\subsection*{Basic format for computer programs and electronic documents (when available online): }
+
+\begin{thebibliography}{00}
+\bibitem{b27} Legislative body. Number of Congress, Session. (year, month day). \textit{Number of bill or resolution}, \textit{Title}. [Type
+of medium]. Available: \underline{site/path/file}
+\end{thebibliography}
+
+\textbf{\textit{NOTE: }}ISO recommends that capitalization follow the
+accepted practice for the language or script in which the information is
+given.
+
+\subsection*{Example:}
+
+\begin{thebibliography}{00}
+\bibitem{b28} U.S. House. 102nd Congress, 1st Session. (1991, Jan. 11). \textit{H. Con. Res. 1, Sense of the Congress on Approval of Military Action}. [Online]. Available: LEXIS Library: GENFED File: BILLS
+\end{thebibliography}
+
+\subsection*{Basic format for patents (when available online):}
+
+\begin{thebibliography}{00}
+\bibitem{b29} Name of the invention, by inventor's name. (year, month day). Patent Number [Type
+of medium]. Available: \underline{site/path/file}
+\end{thebibliography}
+
+\subsection*{Example:}
+
+\begin{thebibliography}{00}
+\bibitem{b30} Musical toothbrush with mirror, by L.M.R. Brooks. (1992, May 19). Patent D 326 189 [Online]. Available: NEXIS Library: LEXPAT File: DES
+\end{thebibliography}
+
+\subsection*{Example for papers presented at conferences (unpublished):}
+
+\begin{thebibliography}{00}
+\bibitem{b31} D. Ebehard and E. Voges, ``Digital single sideband
+detection for interferometric sensors,'' presented at the \textit{2nd Int. Conf. Optical Fiber Sensors,} Stuttgart, Germany, Jan. 2--5, 1984.
+\end{thebibliography}
+
+\subsection*{Basic format for patents:}
+
+\begin{thebibliography}{00}
+\bibitem{b32} J. K. Author, ``Title of patent,'' U.S. Patent {x xxx xxx}, Abbrev. Month, day, year.
+\end{thebibliography}
+
+\subsection*{Example:}
+
+\begin{thebibliography}{00}
+\bibitem{b33} G. Brandli and M. Dick, ``Alternating current fed power supply,'' U.S. Patent 4 084 217, Nov. 4, 1978.
+\end{thebibliography}
+
+\subsection*{Basic format for theses (M.S.) and dissertations (Ph.D.):}
+
+\begin{thebibliography}{00}
+\bibitem{b34} J. K. Author, ``Title of thesis,'' M.S. thesis, Abbrev. Dept., Abbrev.
+Univ., City of Univ., Abbrev. State, year. p. nnn.
+\bibitem{b35} J. K. Author, ``Title of dissertation,'' Ph.D. dissertation, Abbrev.
+Dept., Abbrev. Univ., City of Univ., Abbrev. State, year. p. nnn.
+\end{thebibliography}
+
+\subsection*{Examples:}
+
+\begin{thebibliography}{00}
+\bibitem{b36} J. O. Williams, ``Narrow-band analyzer,'' Ph.D. dissertation, Dept. Elect. Eng., Harvard Univ., Cambridge, MA, USA, 1993. p. 50.
+\bibitem{b37} N. Kawasaki, ``Parametric study of thermal and chemical nonequilibrium nozzle flow,'' M.S. thesis, Dept. Electron. Eng., Osaka Univ., Osaka, Japan, 1993. p. 30.
+\end{thebibliography}
+
+\subsection*{Basic format for the most common types of unpublished references:}
+
+\begin{thebibliography}{00}
+\bibitem{b38} J. K. Author, private communication, Abbrev. Month, year.
+\bibitem{b39} J. K. Author, ``Title of paper,'' unpublished.
+\bibitem{b40} J. K. Author, ``Title of paper,'' to be published.
+\end{thebibliography}
+
+\subsection*{Examples:}
+
+\begin{thebibliography}{00}
+\bibitem{b41} A. Harrison, private communication, May 1995.
+\bibitem{b42} B. Smith, ``An approach to graphs of linear forms,'' unpublished.
+\bibitem{b43} A. Brahms, ``Representation error for real numbers in binary computer arithmetic,'' IEEE Computer Group Repository, Paper R-67-85.
+\end{thebibliography}
+
+\subsection*{Basic formats for standards:}
+
+\begin{thebibliography}{00}
+\bibitem{b44} \textit{Title of Standard}, Standard number, date.
+\bibitem{b45} \textit{Title of Standard}, Standard number, Corporate author, location, date.
+\end{thebibliography}
+
+\subsection*{Examples:}
+
+\begin{thebibliography}{00}
+\bibitem{b46} \emph{IEEE Criteria for Class IE Electric Systems}, IEEE Standard 308, 1969.
+\bibitem{b47} \emph{Letter Symbols for Quantities}, ANSI Standard Y10.5-1968.
+\end{thebibliography}
+
+\subsection*{Article number in~reference examples:}
+
+\begin{thebibliography}{00}
+\bibitem{b48} R. Fardel, M. Nagel, F. Nuesch, T. Lippert, and A. Wokaun, ``Fabrication of organic light emitting diode pixels by laser-assisted forward transfer,'' \textit{Appl. Phys. Lett.}, vol. 91, no. 6, Aug. 2007, Art. no. 061103.~
+\bibitem{b49} J. Zhang and N. Tansu, ``Optical gain and laser characteristics of InGaN quantum wells on ternary InGaN substrates,'' \textit{IEEE Photon. J.}, vol. 5, no. 2, Apr. 2013, Art. no. 2600111
+\end{thebibliography}
+
+\subsection*{Example when using et al.:}
+
+\begin{thebibliography}{00}
+\bibitem{b50} S. Azodolmolky, Jordi Perell\'{o}, Marianna Angelou, Fernando Agraz, Luis Velasco, Salvatore Spadaro,~\textit{et al.}, Experimental demonstration of an impairment aware network planning and operation tool for transparent/translucent optical networks,''~\textit{J. Lightwave. Technol.}, vol. 29, no. 4, pp. 439--448, Sep. 2011.~
+\end{thebibliography}
+
+\end{document}
